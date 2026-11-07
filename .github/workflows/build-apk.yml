@@ -59,6 +59,18 @@ jobs:
           name: GlassLauncher-alpha
           path: GlassLauncher-alpha.apk
 
+      # Keep only the newest build: delete older releases and every old tag
+      - name: Remove old releases and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --limit 200 --json tagName -q '.[].tagName' | while read -r t; do
+            [ -n "$t" ] && gh release delete "$t" --cleanup-tag -y || true
+          done
+          git ls-remote --tags origin | awk '{print $2}' | grep -v '\^{}' | sed 's#refs/tags/##' | while read -r t; do
+            [ -n "$t" ] && git push -q origin --delete "refs/tags/$t" || true
+          done
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
