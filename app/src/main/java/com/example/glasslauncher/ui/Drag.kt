@@ -137,7 +137,7 @@ class DragController(private val scope: CoroutineScope) {
         onDrop(d, t)
     }
 
-    private fun setTarget(t: DropTarget) {
+    private fun changeTarget(t: DropTarget) {
         if (t != target) {
             target = t
             onTargetChange(t)
@@ -149,20 +149,20 @@ class DragController(private val scope: CoroutineScope) {
         val isApp = d.entry is AppEntry
 
         when {
-            removeRect.contains(p) -> { clearTimers(); setTarget(DropTarget.Remove); return }
-            isApp && uninstallRect.contains(p) -> { clearTimers(); setTarget(DropTarget.Uninstall); return }
+            removeRect.contains(p) -> { clearTimers(); changeTarget(DropTarget.Remove); return }
+            isApp && uninstallRect.contains(p) -> { clearTimers(); changeTarget(DropTarget.Uninstall); return }
             showDock && dockRect.contains(p) -> {
                 clearTimers()
-                if (!isApp) { setTarget(DropTarget.None); return }
+                if (!isApp) { changeTarget(DropTarget.None); return }
                 val alreadyIn = d.source is DragSource.Dock
-                if (!alreadyIn && dockBase.size >= dockCapacity) { setTarget(DropTarget.None); return }
+                if (!alreadyIn && dockBase.size >= dockCapacity) { changeTarget(DropTarget.None); return }
                 val slots = dockBase.size + 1
                 val i = ((p.x - dockRect.left) / dockRect.width * slots).toInt().coerceIn(0, dockBase.size)
-                setTarget(DropTarget.Dock(i))
+                changeTarget(DropTarget.Dock(i))
                 return
             }
             gridRect.contains(p) -> gridTarget(p, d, isApp)
-            else -> { clearTimers(); setTarget(DropTarget.None) }
+            else -> { clearTimers(); changeTarget(DropTarget.None) }
         }
     }
 
@@ -212,7 +212,7 @@ class DragController(private val scope: CoroutineScope) {
                 mergeJob?.cancel()
                 mergeJob = scope.launch {
                     delay(320)
-                    if (item != null && mergeCandidate == shown.id) setTarget(DropTarget.Merge(shown.id))
+                    if (item != null && mergeCandidate == shown.id) changeTarget(DropTarget.Merge(shown.id))
                 }
             }
             return
@@ -220,7 +220,7 @@ class DragController(private val scope: CoroutineScope) {
         mergeCandidate = null
         mergeJob?.cancel()
         if (shown is HoleEntry) return
-        setTarget(DropTarget.Home(g.coerceIn(0, homeBase.size)))
+        changeTarget(DropTarget.Home(g.coerceIn(0, homeBase.size)))
     }
 
     private fun clearTimers() {
