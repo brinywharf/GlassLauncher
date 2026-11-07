@@ -1,6 +1,5 @@
 package com.example.glasslauncher.ui
 
-import android.Manifest
 import android.app.Activity
 import android.app.ActivityOptions
 import android.graphics.Rect
@@ -27,6 +26,8 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -63,11 +64,13 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.glasslauncher.LauncherViewModel
 import com.example.glasslauncher.SystemActions
 import com.example.glasslauncher.WidgetController
+import com.example.glasslauncher.data.DragSource
 import com.example.glasslauncher.data.DrawerSort
+import com.example.glasslauncher.data.DropTarget
+import com.example.glasslauncher.data.isFolderId
 import com.example.glasslauncher.data.GestureAction
 import com.example.glasslauncher.data.OpenAnim
 import com.example.glasslauncher.data.UiApp
-import com.example.glasslauncher.data.WeatherSource
 import com.example.glasslauncher.services.NotificationDots
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -93,13 +96,7 @@ fun LauncherApp(
     val data by vm.userData.collectAsStateWithLifecycle()
     val wallpaper by vm.wallpaper.collectAsStateWithLifecycle()
     val rawDots by NotificationDots.packages.collectAsStateWithLifecycle()
-    val weather by vm.weather.collectAsStateWithLifecycle()
-    var hasLocation by remember { mutableStateOf(WeatherSource.hasPermission(context)) }
-    val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        hasLocation = granted
-        if (granted) vm.refreshWeather(force = true)
-    }
-    LaunchedEffect(settings.showWeather, settings.weatherFahrenheit) { vm.refreshWeather() }
+
     val dots = if (settings.notificationDots) rawDots else emptySet()
 
     LaunchedEffect(widgets) { widgets.onWidgetAdded = { vm.addWidget(it) } }
@@ -159,8 +156,6 @@ fun LauncherApp(
     // ------------------------------------------------ Return-to-home reveal
     val reveal = remember { Animatable(1f) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
-        hasLocation = WeatherSource.hasPermission(context)
-        vm.refreshWeather()
         if (!drawerShown) {
             scope.launch {
                 reveal.snapTo(0.94f)
@@ -175,15 +170,23 @@ fun LauncherApp(
     var widgetPickerOpen by remember { mutableStateOf(false) }
     var menuApp by remember { mutableStateOf<UiApp?>(null) }
     var editApp by remember { mutableStateOf<UiApp?>(null) }
+    var openFolderId by remember { mutableStateOf<String?>(null) }
+    var folderHiddenForDrag by remember { mutableStateOf(false) }
+    var folderMenu by remember { mutableStateOf<FolderEntry?>(null) }
     var homeEvent by remember { mutableIntStateOf(0) }
     var lastIconLongPress by remember { mutableLongStateOf(0L) }
 
     // Lowest priority: a launcher never closes on Back.
     BackHandler(enabled = true) {}
-    BackHandler(enabled = drawerShown || settingsOpen || homeMenuOpen || widgetPickerOpen || menuApp != null || editApp != null) {
+    BackHandler(
+        enabled = drawerShown || settingsOpen || homeMenuOpen || widgetPickerOpen || menuApp != null ||
+            editApp != null || openFolderId != null || folderMenu != null
+    ) {
         when {
             editApp != null -> editApp = null
             menuApp != null -> menuApp = null
+            folderMenu != null -> folderMenu = null
+            openFolderId != null -> openFolderId = null
             widgetPickerOpen -> widgetPickerOpen = false
             homeMenuOpen -> homeMenuOpen = false
             settingsOpen -> settingsOpen = false
@@ -194,9 +197,9 @@ fun LauncherApp(
     LaunchedEffect(homePressed) {
         homePressed.collect {
             val anythingOpen = drawerShown || settingsOpen || homeMenuOpen || widgetPickerOpen ||
-                menuApp != null || editApp != null
+                menuApp != null || editApp != null || openFolderId != null || folderMenu != null
             settingsOpen = false; homeMenuOpen = false; widgetPickerOpen = false
-            menuApp = null; editApp = null
+            menuApp = null; editApp = null; openFolderId = null; folderMenu = null
             if (drawerShown) closeDrawer()
             if (!anythingOpen) homeEvent++
         }
@@ -210,8 +213,18 @@ fun LauncherApp(
     }
 
     // ------------------------------------------------ Lists
-    val homeApps = remember(apps, data.home, data.hidden) {
-        data.home.filter { it !in data.hidden }.mapNotNull { apps[it] }
+    val homeEntries = remember(apps, data.home, data.folders, data.hidden) {
+        data.home.mapNotNull { id ->
+            if (isFolderId(id)) {
+                data.folders[id]?.let { f ->
+                    val inside = f.apps.filter { it !in data.hidden }.mapNotNull { apps[it] }
+                    if (inside.isEmpty()) null else FolderEntry(id, f.name, inside)
+                }
+            } else if (id in data.hidden) null else apps[id]?.let { AppEntry(it) }
+        }
+    }
+    val openFolder = remember(homeEntries, openFolderId) {
+        openFolderId?.let { id -> homeEntries.firstOrNull { it.id == id } as? FolderEntry }
     }
     val dockApps = remember(apps, data.dock, data.hidden, settings.dockCount) {
         data.dock.filter { it !in data.hidden }.mapNotNull { apps[it] }.take(settings.dockCount)
@@ -281,6 +294,34 @@ fun LauncherApp(
         if (uri != null) vm.importBackup(uri)
     }
 
+    // ------------------------------------------------ Drag & drop
+    val drag = remember { DragController(scope) }
+    SideEffect {
+        drag.onStart = { d ->
+            menuApp = null
+            homeMenuOpen = false
+            folderMenu = null
+            if (d.source is DragSource.Folder) folderHiddenForDrag = true
+            if (d.source is DragSource.Drawer) closeDrawer()
+        }
+        drag.onTargetChange = { t ->
+            if (settings.haptics && (t is DropTarget.Merge || t is DropTarget.Remove || t is DropTarget.Uninstall)) {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            }
+        }
+        drag.onDrop = { d, t ->
+            val entry = d.entry
+            if (t is DropTarget.Uninstall && entry is AppEntry) vm.uninstall(entry.app.app)
+            else if (vm.drop(d.id, d.source, t) && settings.haptics) {
+                view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+            }
+            if (d.source is DragSource.Folder) {
+                folderHiddenForDrag = false
+                openFolderId = null
+            }
+        }
+    }
+
     val onAppLongPress: (UiApp) -> Unit = {
         lastIconLongPress = SystemClock.uptimeMillis()
         homeMenuOpen = false
@@ -290,7 +331,7 @@ fun LauncherApp(
     val glass = GlassConfig(settings.refraction, settings.blur, settings.frost, settings.rimLight)
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Color.White, background = Color.Transparent)) {
-        CompositionLocalProvider(LocalGlass provides glass, LocalUiPrefs provides uiPrefs) {
+        CompositionLocalProvider(LocalGlass provides glass, LocalUiPrefs provides uiPrefs, LocalDrag provides drag) {
             // Everything drawn into this backdrop is what the glass refracts.
             val backdrop = rememberLayerBackdrop()
 
@@ -335,7 +376,7 @@ fun LauncherApp(
                     HomeScreen(
                         settings = settings,
                         backdrop = backdrop,
-                        homeApps = homeApps,
+                        homeEntries = homeEntries,
                         dockApps = dockApps,
                         dots = dots,
                         widgetIds = data.widgets,
@@ -355,11 +396,11 @@ fun LauncherApp(
                             widgets.remove(id)
                             vm.removeWidget(id)
                         },
-                        weather = weather,
-                        weatherNeedsPermission = !hasLocation,
-                        onWeatherClick = {
-                            if (!hasLocation) locationPermission.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
-                            else SystemActions.webSearch(context, t("weather", "hava durumu") + (weather?.city?.let { " $it" } ?: ""))
+                        onOpenFolder = { openFolderId = it.id },
+                        onFolderLongPress = {
+                            lastIconLongPress = SystemClock.uptimeMillis()
+                            homeMenuOpen = false
+                            folderMenu = it
                         },
                     )
                 }
@@ -473,6 +514,34 @@ fun LauncherApp(
                     onPick = { widgets.add(it) },
                     onDismiss = { widgetPickerOpen = false },
                 )
+
+                FolderOverlay(
+                    folder = openFolder,
+                    hiddenForDrag = folderHiddenForDrag,
+                    settings = settings,
+                    dots = dots,
+                    backdrop = backdrop,
+                    onLaunch = launchApp,
+                    onAppLongPress = onAppLongPress,
+                    onRename = { id, name -> vm.renameFolder(id, name) },
+                    onDismiss = { openFolderId = null },
+                )
+
+                val fm = folderMenu
+                GlassMenu(
+                    visible = fm != null,
+                    backdrop = backdrop,
+                    title = fm?.name ?: "",
+                    items = if (fm == null) emptyList() else listOf(
+                        MenuAction(Icons.Default.Edit, t("Open & rename", "Aç ve yeniden adlandır")) { openFolderId = fm.id },
+                        MenuAction(Icons.Default.Refresh, t("Ungroup", "Klasörü dağıt")) { vm.ungroupFolder(fm.id) },
+                        MenuAction(Icons.Default.Close, t("Remove from home screen", "Ana ekrandan kaldır")) { vm.removeFromHome(fm.id) },
+                    ),
+                    onDismiss = { folderMenu = null },
+                )
+
+                DropBar(drag)
+                DragGhost(drag, settings.iconSize.dp)
             }
         }
     }

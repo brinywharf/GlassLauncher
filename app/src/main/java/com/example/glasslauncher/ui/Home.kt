@@ -38,6 +38,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -55,6 +56,8 @@ import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
@@ -64,14 +67,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.glasslauncher.SystemActions
 import com.example.glasslauncher.WidgetController
+import com.example.glasslauncher.data.DragSource
+import com.example.glasslauncher.data.DropTarget
 import com.example.glasslauncher.data.GestureAction
 import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.PageEffect
 import com.example.glasslauncher.data.SearchBarPos
 import com.example.glasslauncher.data.UiApp
-import com.example.glasslauncher.data.Weather
-import com.example.glasslauncher.data.weatherEmoji
-import com.example.glasslauncher.data.weatherText
 import com.kyant.backdrop.Backdrop
 import kotlinx.coroutines.delay
 import java.time.Instant
@@ -86,7 +88,7 @@ import kotlin.math.roundToInt
 fun HomeScreen(
     settings: LauncherSettings,
     backdrop: Backdrop,
-    homeApps: List<UiApp>,
+    homeEntries: List<HomeEntry>,
     dockApps: List<UiApp>,
     dots: Set<String>,
     widgetIds: List<Int>,
@@ -101,19 +103,47 @@ fun HomeScreen(
     onHomeLongPress: () -> Unit,
     onAddWidget: () -> Unit,
     onRemoveWidget: (Int) -> Unit,
-    weather: Weather? = null,
-    weatherNeedsPermission: Boolean = false,
-    onWeatherClick: () -> Unit = {},
+    onOpenFolder: (FolderEntry) -> Unit,
+    onFolderLongPress: (FolderEntry) -> Unit,
 ) {
     val s = settings
     val prefs = LocalUiPrefs.current
+    val drag = LocalDrag.current!!
+    val density = LocalDensity.current
     val perPage = max(1, s.homeColumns * s.homeRows)
-    val appPages = max(1, (homeApps.size + perPage - 1) / perPage)
+
+    // ---- what the grid shows while dragging: the dragged icon lifted out, a gap where it will land
+    val draggingId = drag.item?.id
+    val dragging = draggingId != null
+    val base = remember(homeEntries, draggingId) {
+        if (draggingId != null) homeEntries.filter { it.id != draggingId } else homeEntries
+    }
+    val target = drag.target
+    val display: List<HomeEntry> = if (target is DropTarget.Home) {
+        base.toMutableList<HomeEntry>().also { it.add(target.index.coerceIn(0, it.size), HoleEntry) }
+    } else base
+    val mergeId = (target as? DropTarget.Merge)?.targetId
+
+    val appPages = max(1, (display.size + perPage - 1) / perPage) + (if (dragging) 1 else 0)
     val pageCount by rememberUpdatedState(appPages + 1) // page 0 = widgets
     val pagerState = rememberPagerState(initialPage = 1) { pageCount }
 
+    SideEffect {
+        drag.homeBase = base
+        drag.cols = s.homeColumns
+        drag.rows = s.homeRows
+        drag.pageCount = appPages + 1
+        drag.currentPage = pagerState.currentPage
+        drag.showDock = s.showDock
+        drag.dockCapacity = s.dockCount
+        drag.edgePx = with(density) { 28.dp.toPx() }
+    }
+
     LaunchedEffect(homeEvent) {
         if (homeEvent > 0) pagerState.animateScrollToPage(1, animationSpec = fluidSpring(prefs, 1f, 500f))
+    }
+    LaunchedEffect(drag.pageRequest) {
+        drag.pageRequest?.let { pagerState.animateScrollToPage(it.first, animationSpec = fluidSpring(prefs, 0.9f, 400f)) }
     }
 
     // One vertical gesture. Swipe up for the drawer follows the finger; other actions fire on release.
@@ -160,9 +190,6 @@ fun HomeScreen(
             if (s.showGlance) {
                 GlanceCard(
                     backdrop, s.clock24h,
-                    weather = if (s.showWeather) weather else null,
-                    askWeather = s.showWeather && weatherNeedsPermission,
-                    onWeatherClick = onWeatherClick,
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
                 )
             }
@@ -183,8 +210,13 @@ fun HomeScreen(
                     if (page == 0) {
                         WidgetPage(widgetIds, widgets, backdrop, onAddWidget, onRemoveWidget)
                     } else {
-                        val slice = homeApps.drop((page - 1) * perPage).take(perPage)
-                        AppGridPage(slice, s, dots, onLaunch, onAppLongPress)
+                        val slice = display.drop((page - 1) * perPage).take(perPage)
+                        AppGridPage(
+                            slice, s, dots, mergeId, onLaunch, onAppLongPress, onOpenFolder, onFolderLongPress,
+                            Modifier.onGloballyPositioned {
+                                if (page == pagerState.currentPage) drag.gridRect = it.boundsInWindow()
+                            },
+                        )
                     }
                 }
             }
@@ -193,6 +225,7 @@ fun HomeScreen(
             Spacer(Modifier.height(10.dp))
 
             if (s.showDock) Dock(dockApps, s, dots, backdrop, onLaunch, onAppLongPress)
+            else SideEffect { drag.dockRect = androidx.compose.ui.geometry.Rect.Zero }
 
             if (s.searchBarPos == SearchBarPos.BOTTOM) SearchBar(backdrop, onOpenSearch) else Spacer(Modifier.height(12.dp))
         }
@@ -240,38 +273,40 @@ private fun GraphicsLayerScope.applyPageEffect(effect: PageEffect, d: Float) {
 
 @Composable
 private fun AppGridPage(
-    apps: List<UiApp>,
+    entries: List<HomeEntry>,
     s: LauncherSettings,
     dots: Set<String>,
+    mergeId: String?,
     onLaunch: (UiApp, Rect?) -> Unit,
     onLongPress: (UiApp) -> Unit,
+    onOpenFolder: (FolderEntry) -> Unit,
+    onFolderLongPress: (FolderEntry) -> Unit,
+    modifier: Modifier,
 ) {
-    Column(
-        Modifier
+    SlotGrid(
+        items = entries,
+        cols = s.homeColumns,
+        rows = s.homeRows,
+        modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        repeat(s.homeRows) { r ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                repeat(s.homeColumns) { c ->
-                    val app = apps.getOrNull(r * s.homeColumns + c)
-                    Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-                        if (app != null) {
-                            AppIcon(
-                                app, s.iconSize.dp, s.showLabels,
-                                dot = s.notificationDots && app.app.packageName in dots,
-                                onClick = onLaunch, onLongClick = onLongPress,
-                                labelSize = s.labelSize,
-                            )
-                        }
-                    }
-                }
-            }
+            .then(modifier),
+    ) { entry ->
+        when (entry) {
+            is AppEntry -> AppIcon(
+                entry.app, s.iconSize.dp, s.showLabels,
+                dot = s.notificationDots && entry.app.app.packageName in dots,
+                onClick = onLaunch, onLongClick = onLongPress,
+                labelSize = s.labelSize,
+                dragSource = DragSource.Home,
+                highlighted = entry.id == mergeId,
+            )
+            is FolderEntry -> FolderIcon(
+                entry, s.iconSize.dp, s.showLabels, s.labelSize,
+                onOpen = onOpenFolder, onLongClick = onFolderLongPress,
+                highlighted = entry.id == mergeId,
+            )
+            HoleEntry -> Spacer(Modifier.size(s.iconSize.dp))
         }
     }
 }
@@ -280,9 +315,6 @@ private fun AppGridPage(
 private fun GlanceCard(
     backdrop: Backdrop,
     clock24h: Boolean,
-    weather: Weather?,
-    askWeather: Boolean,
-    onWeatherClick: () -> Unit,
     modifier: Modifier,
 ) {
     val context = LocalContext.current
@@ -330,25 +362,6 @@ private fun GlanceCard(
                 style = small,
             )
         }
-        if (weather != null || askWeather) {
-            Column(
-                Modifier.clickable(interactionSource = null, indication = null, onClick = onWeatherClick),
-                horizontalAlignment = Alignment.End,
-            ) {
-                if (weather != null) {
-                    Text(
-                        "${weatherEmoji(weather.code, weather.isDay)} ${weather.temp.roundToInt()}°",
-                        style = LabelStyle.copy(fontSize = 30.sp, fontWeight = FontWeight.Light),
-                    )
-                    val (en, tr) = weatherText(weather.code)
-                    Text(weather.city ?: t(en, tr), style = small, maxLines = 1)
-                    Text("↑${weather.high.roundToInt()}°  ↓${weather.low.roundToInt()}°", style = small)
-                } else {
-                    Text("📍", style = LabelStyle.copy(fontSize = 26.sp))
-                    Text(t("Tap for weather", "Hava durumu için dokun"), style = small)
-                }
-            }
-        }
     }
 }
 
@@ -378,31 +391,45 @@ private fun Dock(
     onLaunch: (UiApp, Rect?) -> Unit,
     onLongPress: (UiApp) -> Unit,
 ) {
-    Row(
+    val drag = LocalDrag.current!!
+    val draggingId = drag.item?.id
+    val base = remember(apps, draggingId) { if (draggingId != null) apps.filter { it.key != draggingId } else apps }
+    SideEffect { drag.dockBase = base }
+    val target = drag.target
+    val display: List<HomeEntry> = base.map<UiApp, HomeEntry> { AppEntry(it) }.let { list ->
+        if (target is DropTarget.Dock) list.toMutableList().also { it.add(target.index.coerceIn(0, it.size), HoleEntry) } else list
+    }
+
+    Box(
         Modifier
             .padding(horizontal = 16.dp)
             .fillMaxWidth()
+            .height(s.iconSize.dp + 30.dp)
             .then(
                 if (s.dockBackground) Modifier.liquidGlass(backdrop, RoundedCornerShape(36.dp), blurRadius = 5.dp, refractionHeight = 24.dp, refractionAmount = 56.dp)
                 else Modifier
             )
-            .padding(vertical = 14.dp, horizontal = 6.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly,
-        verticalAlignment = Alignment.CenterVertically,
+            .onGloballyPositioned { drag.dockRect = it.boundsInWindow() }
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        if (apps.isEmpty()) {
+        if (display.isEmpty()) {
             Text(
-                t("Long-press an app → Add to dock", "Bir uygulamaya uzun bas → Dock'a ekle"),
+                t("Drag apps here", "Uygulamaları buraya sürükle"),
                 style = LabelStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.75f)),
-                modifier = Modifier.padding(vertical = 18.dp),
             )
-        }
-        apps.forEach { app ->
-            AppIcon(
-                app, s.iconSize.dp, showLabel = false,
-                dot = s.notificationDots && app.app.packageName in dots,
-                onClick = onLaunch, onLongClick = onLongPress,
-            )
+        } else {
+            SlotGrid(display, cols = display.size, rows = 1, modifier = Modifier.fillMaxSize()) { entry ->
+                when (entry) {
+                    is AppEntry -> AppIcon(
+                        entry.app, s.iconSize.dp, showLabel = false,
+                        dot = s.notificationDots && entry.app.app.packageName in dots,
+                        onClick = onLaunch, onLongClick = onLongPress,
+                        dragSource = DragSource.Dock,
+                    )
+                    else -> Spacer(Modifier.size(s.iconSize.dp))
+                }
+            }
         }
     }
 }

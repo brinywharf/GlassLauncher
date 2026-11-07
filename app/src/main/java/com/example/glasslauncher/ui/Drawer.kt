@@ -76,6 +76,7 @@ import com.example.glasslauncher.SystemActions
 import android.content.ClipData
 import android.content.ClipboardManager
 import com.example.glasslauncher.data.Calc
+import com.example.glasslauncher.data.DragSource
 import com.example.glasslauncher.data.DrawerSort
 import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.UiApp
@@ -310,7 +311,7 @@ fun AppDrawer(
                             AppIcon(
                                 app, settings.iconSize.dp, settings.drawerLabels,
                                 dot = settings.notificationDots && app.app.packageName in dots,
-                                onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false, labelSize = settings.labelSize,
+                                onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false, labelSize = settings.labelSize, dragSource = DragSource.Drawer,
                             )
                         }
                     }
@@ -351,7 +352,7 @@ fun AppDrawer(
                         AppIcon(
                             app, settings.iconSize.dp, settings.drawerLabels,
                             dot = settings.notificationDots && app.app.packageName in dots,
-                            onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false, labelSize = settings.labelSize,
+                            onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false, labelSize = settings.labelSize, dragSource = DragSource.Drawer,
                         )
                     }
                 }

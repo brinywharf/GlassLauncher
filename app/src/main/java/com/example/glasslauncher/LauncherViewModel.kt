@@ -24,6 +24,11 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.glasslauncher.data.AppInfo
+import com.example.glasslauncher.data.DragSource
+import com.example.glasslauncher.data.DropTarget
+import com.example.glasslauncher.data.FOLDER_PREFIX
+import com.example.glasslauncher.data.FolderData
+import com.example.glasslauncher.data.isFolderId
 import com.example.glasslauncher.data.IconBaker
 import com.example.glasslauncher.data.IconColorMode
 import com.example.glasslauncher.data.IconFactory
@@ -34,8 +39,6 @@ import com.example.glasslauncher.data.ShortcutItem
 import com.example.glasslauncher.data.UiApp
 import com.example.glasslauncher.data.UserData
 import com.example.glasslauncher.data.UserDataStore
-import com.example.glasslauncher.data.Weather
-import com.example.glasslauncher.data.WeatherSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -89,28 +92,6 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         .mapLatest { (raw, style, custom) -> buildUi(raw, style, custom.first, custom.second) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
-    // ---------------------------------------------------------------- Weather (Open-Meteo)
-    private val weatherPrefs = app.getSharedPreferences("weather", Context.MODE_PRIVATE)
-    private val _weather = MutableStateFlow(Weather.fromJson(weatherPrefs.getString("last", null)))
-    val weather: StateFlow<Weather?> = _weather.asStateFlow()
-    private var weatherJob: Job? = null
-
-    /** Refreshes if older than 30 minutes (or always when forced / units changed). */
-    fun refreshWeather(force: Boolean = false) {
-        val s = settings.value
-        if (!s.showWeather || !WeatherSource.hasPermission(context)) return
-        val current = _weather.value
-        val fresh = current != null && current.fahrenheit == s.weatherFahrenheit &&
-            System.currentTimeMillis() - current.fetchedAt < 30 * 60_000L
-        if (fresh && !force) return
-        if (weatherJob?.isActive == true) return
-        weatherJob = viewModelScope.launch {
-            val w = WeatherSource.fetch(context, s.weatherFahrenheit) ?: return@launch
-            _weather.value = w
-            weatherPrefs.edit().putString("last", w.toJson()).apply()
-        }
-    }
-
     private val _wallpaper = MutableStateFlow<ImageBitmap?>(null)
     val wallpaper: StateFlow<ImageBitmap?> = _wallpaper.asStateFlow()
 
@@ -127,16 +108,10 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val all = loadAll()
             rawApps.value = all
+            purgeMissing(all.keys)
             if (!dataStore.state.value.initialized && all.isNotEmpty()) initDefaults(all.values.toList())
         }
         viewModelScope.launch { _wallpaper.value = decodeWallpaper() }
-        // Keep the weather fresh while the launcher is alive
-        viewModelScope.launch {
-            while (true) {
-                refreshWeather()
-                kotlinx.coroutines.delay(10 * 60_000L)
-            }
-        }
     }
 
     override fun onCleared() {
@@ -189,6 +164,19 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun removePackage(pkg: String) {
         rawApps.update { map -> map.filterValues { it.packageName != pkg } }
+        purgeMissing(rawApps.value.keys)
+    }
+
+    /** Drops uninstalled apps from home, dock and folders so positions stay in sync with what's shown. */
+    private fun purgeMissing(present: Set<String>) {
+        if (present.isEmpty()) return
+        dataStore.update { d ->
+            val home = d.home.filter { isFolderId(it) || it in present }
+            val dock = d.dock.filter { it in present }
+            val folders = d.folders.mapValues { (_, f) -> f.copy(apps = f.apps.filter { it in present }) }
+            if (home == d.home && dock == d.dock && folders == d.folders) d
+            else cleanFolders(d.copy(home = home, dock = dock, folders = folders))
+        }
     }
 
     private suspend fun buildUi(
@@ -338,7 +326,122 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun hide(app: AppInfo) = dataStore.update {
-        it.copy(hidden = it.hidden + app.key, home = it.home - app.key, dock = it.dock - app.key)
+        cleanFolders(
+            it.copy(
+                hidden = it.hidden + app.key,
+                home = it.home - app.key,
+                dock = it.dock - app.key,
+                folders = it.folders.mapValues { (_, f) -> f.copy(apps = f.apps - app.key) },
+            )
+        )
+    }
+
+    // ---------------------------------------------------------------- Drag & drop, folders
+
+    /** Applies a finished drag in one atomic update. Returns false if nothing changed. */
+    fun drop(itemId: String, from: DragSource, to: DropTarget): Boolean {
+        if (to is DropTarget.None || to is DropTarget.Uninstall) return false
+        val before = dataStore.state.value
+        dataStore.update { d ->
+            val home = d.home.toMutableList()
+            val dock = d.dock.toMutableList()
+            val folders = d.folders.toMutableMap()
+            val isFolder = isFolderId(itemId)
+
+            // Reject impossible moves before touching anything
+            if (to is DropTarget.Dock && (isFolder || (itemId !in dock && from !is DragSource.Dock && dock.size >= settings.value.dockCount))) {
+                return@update d
+            }
+            if (to is DropTarget.Merge && (isFolder || to.targetId == itemId)) return@update d
+
+            // 1) take it out of where it came from
+            when (from) {
+                DragSource.Home -> home.remove(itemId)
+                DragSource.Dock -> dock.remove(itemId)
+                is DragSource.Folder -> folders[from.id]?.let { folders[from.id] = it.copy(apps = it.apps - itemId) }
+                DragSource.Drawer -> Unit
+            }
+
+            // 2) put it where it was dropped
+            when (to) {
+                is DropTarget.Home -> {
+                    home.remove(itemId)
+                    dock.remove(itemId)
+                    home.add(to.index.coerceIn(0, home.size), itemId)
+                }
+                is DropTarget.Dock -> {
+                    dock.remove(itemId)
+                    home.remove(itemId)
+                    dock.add(to.index.coerceIn(0, dock.size), itemId)
+                }
+                is DropTarget.Merge -> {
+                    home.remove(itemId)
+                    dock.remove(itemId)
+                    val target = to.targetId
+                    if (isFolderId(target)) {
+                        folders[target]?.let { if (itemId !in it.apps) folders[target] = it.copy(apps = it.apps + itemId) }
+                    } else {
+                        val at = home.indexOf(target)
+                        if (at >= 0) {
+                            val id = FOLDER_PREFIX + System.currentTimeMillis().toString(36)
+                            folders[id] = FolderData(defaultFolderName(), listOf(target, itemId))
+                            home[at] = id
+                        }
+                    }
+                }
+                DropTarget.Remove -> Unit
+                else -> Unit
+            }
+            cleanFolders(d.copy(home = home, dock = dock, folders = folders))
+        }
+        return dataStore.state.value != before
+    }
+
+    /** Folders with one app turn back into that app; empty folders disappear. */
+    private fun cleanFolders(d: UserData): UserData {
+        val home = d.home.toMutableList()
+        val folders = d.folders.toMutableMap()
+        for ((id, f) in d.folders) {
+            when {
+                f.apps.isEmpty() -> {
+                    home.remove(id)
+                    folders.remove(id)
+                }
+                f.apps.size == 1 -> {
+                    val i = home.indexOf(id)
+                    val only = f.apps.first()
+                    if (i >= 0) {
+                        if (only in home) home.removeAt(i) else home[i] = only
+                    }
+                    folders.remove(id)
+                }
+                id !in home -> folders.remove(id)
+            }
+        }
+        return d.copy(home = home, folders = folders)
+    }
+
+    private fun defaultFolderName(): String =
+        if (java.util.Locale.getDefault().language == "tr") "Klasör" else "Folder"
+
+    fun renameFolder(id: String, name: String) = dataStore.update { d ->
+        val f = d.folders[id] ?: return@update d
+        d.copy(folders = d.folders + (id to f.copy(name = name.trim().ifBlank { defaultFolderName() })))
+    }
+
+    /** Puts the folder's apps back on the home screen where the folder was. */
+    fun ungroupFolder(id: String) = dataStore.update { d ->
+        val f = d.folders[id] ?: return@update d
+        val home = d.home.toMutableList()
+        val at = home.indexOf(id)
+        if (at < 0) return@update d
+        home.removeAt(at)
+        home.addAll(at, f.apps.filter { it !in home })
+        d.copy(home = home, folders = d.folders - id)
+    }
+
+    fun removeFromHome(id: String) = dataStore.update { d ->
+        d.copy(home = d.home - id, folders = if (isFolderId(id)) d.folders - id else d.folders)
     }
 
     fun unhide(key: String) = dataStore.update { it.copy(hidden = it.hidden - key) }

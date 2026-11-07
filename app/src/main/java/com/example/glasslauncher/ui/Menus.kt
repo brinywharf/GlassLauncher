@@ -40,8 +40,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Slider
@@ -57,6 +55,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -83,11 +82,12 @@ data class MenuAction(val icon: ImageVector?, val label: String, val action: () 
 /** Dim scrim + a springy glass card in the middle. Tap outside to dismiss. */
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
-fun GlassOverlay(visible: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+fun GlassOverlay(visible: Boolean, onDismiss: () -> Unit, hidden: Boolean = false, content: @Composable () -> Unit) {
     AnimatedVisibility(visible, enter = fadeIn(tween(140)), exit = fadeOut(tween(120))) {
         Box(
             Modifier
                 .fillMaxSize()
+                .graphicsLayer { alpha = if (hidden) 0f else 1f }
                 .background(Color.Black.copy(alpha = 0.32f))
                 .pointerInput(Unit) { detectTapGestures { onDismiss() } }
                 .imePadding(),
@@ -225,16 +225,6 @@ fun AppMenu(
                 if (onHome) t("Remove from home screen", "Ana ekrandan kaldır") else t("Add to home screen", "Ana ekrana ekle"),
                 act { onToggleHome(a) },
             )
-            if (onHome) {
-                Row(Modifier.padding(horizontal = 12.dp)) {
-                    Box(Modifier.weight(1f)) {
-                        MenuRow(Icons.Default.KeyboardArrowLeft, t("Move back", "Geri taşı"), { onMoveHome(a, -1) })
-                    }
-                    Box(Modifier.weight(1f)) {
-                        MenuRow(Icons.Default.KeyboardArrowRight, t("Move forward", "İleri taşı"), { onMoveHome(a, 1) })
-                    }
-                }
-            }
             MenuRow(
                 Icons.Default.Star,
                 if (inDock) t("Remove from dock", "Dock'tan kaldır") else t("Add to dock", "Dock'a ekle"),

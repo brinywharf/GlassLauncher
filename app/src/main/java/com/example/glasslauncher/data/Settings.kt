@@ -33,8 +33,6 @@ data class LauncherSettings(
     val showLabels: Boolean = true,
     val showGlance: Boolean = true,
     val clock24h: Boolean = true,
-    val showWeather: Boolean = true,
-    val weatherFahrenheit: Boolean = false,
     val searchBarPos: SearchBarPos = SearchBarPos.BOTTOM,
     val showPageDots: Boolean = true,
     val pageEffect: PageEffect = PageEffect.SLIDE,
@@ -121,8 +119,6 @@ class SettingsStore(context: Context) {
             showLabels = p.getBoolean("showLabels", d.showLabels),
             showGlance = p.getBoolean("showGlance", d.showGlance),
             clock24h = p.getBoolean("clock24h", d.clock24h),
-            showWeather = p.getBoolean("showWeather", d.showWeather),
-            weatherFahrenheit = p.getBoolean("weatherFahrenheit", d.weatherFahrenheit),
             searchBarPos = p.enumOf("searchBarPos", d.searchBarPos),
             showPageDots = p.getBoolean("showPageDots", d.showPageDots),
             pageEffect = p.enumOf("pageEffect", d.pageEffect),
@@ -168,8 +164,6 @@ class SettingsStore(context: Context) {
         putBoolean("showLabels", s.showLabels)
         putBoolean("showGlance", s.showGlance)
         putBoolean("clock24h", s.clock24h)
-        putBoolean("showWeather", s.showWeather)
-        putBoolean("weatherFahrenheit", s.weatherFahrenheit)
         putString("searchBarPos", s.searchBarPos.name)
         putBoolean("showPageDots", s.showPageDots)
         putString("pageEffect", s.pageEffect.name)

@@ -44,8 +44,13 @@ Requires **Android 13 (API 33) or newer**.
 - Add to/remove from home or dock, reorder on home
 - Rename and recolor, hide, App info, Uninstall
 
+**New in 0.7.0**
+- Drag & drop: long-press an icon, then move it. Icons glide out of the way; drag to the screen edge to change page
+- Drag between home, dock, folders and from the app drawer; drop on "Remove" or "Uninstall" at the top
+- Folders: drop an app onto another app (hold for a moment) to make a folder; tap to open, rename inline,
+  drag apps back out; long-press a folder to ungroup it
+
 **New in 0.6.0**
-- Weather in the "At a glance" card for your approximate location (free data from Open-Meteo, °C/°F)
 - Calculator in search: type `12*7+3` in the drawer and tap the result to copy it
 - Polished motion: drawer icons rise in row by row, home gently zooms back in when you return from an app,
   a haptic tick when the drawer swipe passes the opening point, touch frame-rate boost on Android 15+
@@ -93,4 +98,3 @@ the APK and publishes it as a release.
 
 Copyright © 2026 Anıl. **All rights reserved**: the source is visible for reference only, see [LICENSE](LICENSE).
 Third-party components keep their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-Weather data by [Open-Meteo.com](https://open-meteo.com) (CC BY 4.0).
