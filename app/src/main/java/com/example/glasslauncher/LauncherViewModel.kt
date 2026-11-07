@@ -4,11 +4,14 @@ import android.app.Application
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.pm.LauncherActivityInfo
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
+import android.graphics.Rect
 import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
@@ -21,51 +24,84 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.glasslauncher.data.AppInfo
+import com.example.glasslauncher.data.IconBaker
+import com.example.glasslauncher.data.IconColorMode
 import com.example.glasslauncher.data.IconFactory
 import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.SettingsStore
 import com.example.glasslauncher.data.ShortcutItem
+import com.example.glasslauncher.data.UiApp
 import com.example.glasslauncher.data.UserData
 import com.example.glasslauncher.data.UserDataStore
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapLatest
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
+private data class IconSpec(val glass: Boolean, val tint: Int?)
+private data class IconStyle(val glass: Boolean, val mode: IconColorMode, val color: Int)
+
+@OptIn(ExperimentalCoroutinesApi::class)
 class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     private val context: Context get() = getApplication()
     private val settingsStore = SettingsStore(app)
     private val dataStore = UserDataStore(app)
     private val launcherApps = app.getSystemService(LauncherApps::class.java)
+    private val user: UserHandle = Process.myUserHandle()
     private val wallpaperFile = File(app.filesDir, "wallpaper")
 
     val settings: StateFlow<LauncherSettings> = settingsStore.state
     val userData: StateFlow<UserData> = dataStore.state
 
-    private val _apps = MutableStateFlow<List<AppInfo>>(emptyList())
-    val apps: StateFlow<List<AppInfo>> = _apps.asStateFlow()
+    /** Raw apps, keyed by "package/activity". */
+    private val rawApps = MutableStateFlow<Map<String, AppInfo>>(emptyMap())
+
+    /** Baked icons, reused until the app or its color changes. */
+    private val iconCache = ConcurrentHashMap<String, Triple<IconSpec, AppInfo, ImageBitmap>>()
+
+    /** Ready-to-draw apps (label + baked glass icon). */
+    val apps: StateFlow<Map<String, UiApp>> = combine(
+        rawApps,
+        settings.map { IconStyle(it.glassIcons, it.iconColorMode, it.iconColor) }.distinctUntilChanged(),
+        userData.map { it.colors to it.renames }.distinctUntilChanged(),
+    ) { raw, style, custom -> Triple(raw, style, custom) }
+        .mapLatest { (raw, style, custom) -> buildUi(raw, style, custom.first, custom.second) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
     private val _wallpaper = MutableStateFlow<ImageBitmap?>(null)
     val wallpaper: StateFlow<ImageBitmap?> = _wallpaper.asStateFlow()
 
-    private var loadJob: Job? = null
-
     private val packageCallback = object : LauncherApps.Callback() {
-        override fun onPackageRemoved(packageName: String, user: UserHandle) = refreshApps()
-        override fun onPackageAdded(packageName: String, user: UserHandle) = refreshApps()
-        override fun onPackageChanged(packageName: String, user: UserHandle) = refreshApps()
-        override fun onPackagesAvailable(p: Array<out String>, u: UserHandle, r: Boolean) = refreshApps()
-        override fun onPackagesUnavailable(p: Array<out String>, u: UserHandle, r: Boolean) = refreshApps()
+        override fun onPackageRemoved(packageName: String, user: UserHandle) = removePackage(packageName)
+        override fun onPackageAdded(packageName: String, user: UserHandle) = reloadPackage(packageName)
+        override fun onPackageChanged(packageName: String, user: UserHandle) = reloadPackage(packageName)
+        override fun onPackagesAvailable(p: Array<out String>, u: UserHandle, r: Boolean) = p.forEach { reloadPackage(it) }
+        override fun onPackagesUnavailable(p: Array<out String>, u: UserHandle, r: Boolean) = p.forEach { removePackage(it) }
     }
 
     init {
         launcherApps.registerCallback(packageCallback, Handler(Looper.getMainLooper()))
-        refreshApps()
+        viewModelScope.launch {
+            val all = loadAll()
+            rawApps.value = all
+            if (!dataStore.state.value.initialized && all.isNotEmpty()) initDefaults(all.values.toList())
+        }
         viewModelScope.launch { _wallpaper.value = decodeWallpaper() }
     }
 
@@ -73,36 +109,74 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         launcherApps.unregisterCallback(packageCallback)
     }
 
-    // ---------------------------------------------------------------- Apps
+    // ---------------------------------------------------------------- Loading
 
-    fun refreshApps() {
-        loadJob?.cancel()
-        loadJob = viewModelScope.launch {
-            val list = withContext(Dispatchers.Default) { loadApps() }
-            _apps.value = list
-            if (!dataStore.state.value.initialized && list.isNotEmpty()) initDefaults(list)
+    private suspend fun loadAll(): Map<String, AppInfo> = coroutineScope {
+        launcherApps.getActivityList(null, user)
+            .filter { it.componentName.packageName != context.packageName }
+            .map { info -> async(Dispatchers.Default) { buildApp(info) } }
+            .awaitAll()
+            .filterNotNull()
+            .associateBy { it.key }
+    }
+
+    private fun buildApp(info: LauncherActivityInfo): AppInfo? = runCatching {
+        val drawable = info.getIcon(0)
+        val original = IconFactory.original(drawable)
+        AppInfo(
+            label = info.label.toString(),
+            packageName = info.componentName.packageName,
+            activityName = info.componentName.className,
+            icon = original,
+            glyph = IconFactory.glyph(drawable),
+            autoColor = IconFactory.autoColor(original),
+        )
+    }.getOrNull()
+
+    private fun reloadPackage(pkg: String) {
+        if (pkg == context.packageName) return
+        viewModelScope.launch {
+            val updated = withContext(Dispatchers.Default) {
+                runCatching { launcherApps.getActivityList(pkg, user) }.getOrDefault(emptyList())
+                    .mapNotNull { buildApp(it) }
+            }
+            rawApps.update { map -> map.filterValues { it.packageName != pkg } + updated.associateBy { it.key } }
         }
     }
 
-    private fun loadApps(): List<AppInfo> {
-        val px = (96 * context.resources.displayMetrics.density).toInt().coerceAtMost(256)
-        return launcherApps.getActivityList(null, Process.myUserHandle())
-            .filter { it.componentName.packageName != context.packageName }
-            .mapNotNull { info ->
-                runCatching {
-                    val drawable = info.getIcon(0)
-                    val original = IconFactory.original(drawable, px)
-                    AppInfo(
-                        label = info.label.toString(),
-                        packageName = info.componentName.packageName,
-                        activityName = info.componentName.className,
-                        icon = original.asImageBitmap(),
-                        glyph = IconFactory.glyph(drawable, px).asImageBitmap(),
-                        autoColor = IconFactory.autoColor(original),
-                    )
-                }.getOrNull()
+    private fun removePackage(pkg: String) {
+        rawApps.update { map -> map.filterValues { it.packageName != pkg } }
+    }
+
+    private suspend fun buildUi(
+        raw: Map<String, AppInfo>,
+        style: IconStyle,
+        colors: Map<String, Int>,
+        renames: Map<String, String>,
+    ): Map<String, UiApp> = coroutineScope {
+        raw.values.map { app ->
+            async(Dispatchers.Default) {
+                val tint: Int? = colors[app.key] ?: when (style.mode) {
+                    IconColorMode.AUTO -> app.autoColor
+                    IconColorMode.SINGLE -> style.color
+                    IconColorMode.CLEAR -> null
+                }
+                val spec = IconSpec(style.glass, tint)
+                val cached = iconCache[app.key]
+                val icon = if (cached != null && cached.first == spec && cached.second === app) {
+                    cached.third
+                } else {
+                    val bmp: Bitmap = if (style.glass) IconBaker.bake(app.glyph, tint) else app.icon
+                    bmp.asImageBitmap().also { iconCache[app.key] = Triple(spec, app, it) }
+                }
+                UiApp(app.key, app, renames[app.key] ?: app.label, icon)
             }
-            .sortedBy { it.label.lowercase() }
+        }.awaitAll().associateBy { it.key }
+    }
+
+    /** Preview for the edit dialog. */
+    suspend fun previewIcon(app: AppInfo, tint: Int?): ImageBitmap = withContext(Dispatchers.Default) {
+        IconBaker.bake(app.glyph, tint).asImageBitmap()
     }
 
     /** First run: fill the dock and home screen with sensible apps. */
@@ -123,8 +197,9 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             }.getOrNull()
         }.filter { it != "android" }.distinct()
 
-        val keyOf = { pkg: String -> list.firstOrNull { it.packageName == pkg }?.key }
-        val dock = (rolePackages.mapNotNull(keyOf) + list.map { it.key })
+        val sorted = list.sortedBy { it.label.lowercase() }
+        val keyOf = { pkg: String -> sorted.firstOrNull { it.packageName == pkg }?.key }
+        val dock = (rolePackages.mapNotNull(keyOf) + sorted.map { it.key })
             .distinct()
             .take(settings.value.dockCount)
 
@@ -132,32 +207,33 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             "com.android.vending", "com.google.android.gm", "com.google.android.youtube",
             "com.google.android.apps.maps", "com.google.android.apps.photos", "com.google.android.calendar",
             "com.google.android.deskclock", "com.android.settings", "com.google.android.apps.docs",
+            "com.sec.android.app.myfiles", "com.samsung.android.calendar", "com.sec.android.gallery3d",
             "com.whatsapp", "com.instagram.android", "org.telegram.messenger", "com.spotify.music",
         )
         var home = favourites.mapNotNull(keyOf).filter { it !in dock }
-        if (home.size < 8) home = (home + list.map { it.key }.filter { it !in dock }).distinct().take(8)
+        if (home.size < 8) home = (home + sorted.map { it.key }.filter { it !in dock }).distinct().take(8)
 
         dataStore.update { it.copy(initialized = true, dock = dock, home = home.take(12)) }
     }
 
-    fun launch(app: AppInfo) {
+    // ---------------------------------------------------------------- Launching
+
+    fun launch(app: AppInfo, sourceBounds: Rect?, options: Bundle?) {
         runCatching {
-            launcherApps.startMainActivity(
-                ComponentName(app.packageName, app.activityName), Process.myUserHandle(), null, null
-            )
+            launcherApps.startMainActivity(ComponentName(app.packageName, app.activityName), user, sourceBounds, options)
         }
         dataStore.update { it.copy(launches = it.launches + (app.key to ((it.launches[app.key] ?: 0) + 1))) }
     }
 
-    fun openAppInfo(app: AppInfo) = SystemActions.start(
-        context, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", app.packageName, null))
-    )
+    fun openAppInfo(app: AppInfo) {
+        SystemActions.start(
+            context, Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", app.packageName, null))
+        )
+    }
 
-    fun uninstall(app: AppInfo) = SystemActions.start(
-        context, Intent(Intent.ACTION_DELETE, Uri.fromParts("package", app.packageName, null))
-    )
-
-    // ---------------------------------------------------------------- Shortcuts
+    fun uninstall(app: AppInfo) {
+        SystemActions.start(context, Intent(Intent.ACTION_DELETE, Uri.fromParts("package", app.packageName, null)))
+    }
 
     suspend fun shortcutsFor(app: AppInfo): List<ShortcutItem> = withContext(Dispatchers.IO) {
         runCatching {
@@ -171,7 +247,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 )
             val dm = context.resources.displayMetrics
             val px = (32 * dm.density).toInt()
-            launcherApps.getShortcuts(query, Process.myUserHandle()).orEmpty()
+            launcherApps.getShortcuts(query, user).orEmpty()
                 .filter { it.isEnabled }
                 .sortedBy { it.rank }
                 .take(5)
@@ -268,6 +344,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 decoder.setTargetSampleSize(scale)
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
+            bitmap.prepareToDraw()
             bitmap.asImageBitmap()
         }.getOrNull()
     }

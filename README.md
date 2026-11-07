@@ -21,8 +21,9 @@ Requires **Android 13 (API 33) or newer**.
 - Icon colors: *From app* (picked automatically from each icon), *One color* for all, or *Clear glass*
 - **Per-app color**: long-press an app → Edit → pick any color from swatches or the hue slider
 - Adjustable glass strength: refraction, blur, frost, light rim
+- Finger-following app drawer with spring physics, pull-down-to-close, apps zoom open from their icon
 - Squishy press animation on icons, haptic feedback
-- Your own wallpaper (photo picker) or an animated aurora background
+- Your own wallpaper (photo picker) or the default aurora background
 
 **Home screen (Pixel style)**
 - "At a glance" card: clock, date, battery, next alarm (tap to open the Clock app)

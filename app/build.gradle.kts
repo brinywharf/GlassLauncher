@@ -15,8 +15,8 @@ android {
         // Android 13+: the liquid-glass lens effect needs RuntimeShader (API 33).
         minSdk = 33
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0-alpha"
+        versionCode = 3
+        versionName = "0.3.0-alpha"
     }
 
     // One fixed key so every new APK installs over the previous one.

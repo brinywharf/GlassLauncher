@@ -1,10 +1,13 @@
 package com.example.glasslauncher.ui
 
+import android.graphics.Rect
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -41,28 +44,33 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.glasslauncher.SystemActions
-import com.example.glasslauncher.data.AppInfo
-import kotlinx.coroutines.delay
+import com.example.glasslauncher.data.LauncherSettings
+import com.example.glasslauncher.data.UiApp
+import com.kyant.backdrop.Backdrop
 import kotlinx.coroutines.launch
 
 private fun letterOf(label: String): String {
@@ -70,47 +78,92 @@ private fun letterOf(label: String): String {
     return if (c.isLetter()) c.toString() else "#"
 }
 
+/**
+ * The app drawer. Its position is driven from outside (progress 0..1) so it follows the
+ * finger exactly; onDrag/onSettle feed gestures back. Pulling down at the top of the list
+ * closes it, like on Pixel.
+ */
 @Composable
 fun AppDrawer(
-    ic: IconContext,
-    apps: List<AppInfo>,
-    suggestions: List<AppInfo>,
+    settings: LauncherSettings,
+    backdrop: Backdrop,
+    apps: List<UiApp>,
+    suggestions: List<UiApp>,
+    dots: Set<String>,
+    open: Boolean,
     focusSearch: Boolean,
-    onLaunch: (AppInfo) -> Unit,
-    onLongPress: (AppInfo) -> Unit,
-    onClose: () -> Unit,
+    progress: () -> Float,
+    onDrag: (Float) -> Unit,
+    onSettle: (Float) -> Unit,
+    onLaunch: (UiApp, Rect?) -> Unit,
+    onLongPress: (UiApp) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val context = LocalContext.current
-    val backdrop = ic.backdrop
-    var query by rememberSaveable { mutableStateOf("") }
+    var query by remember { mutableStateOf("") }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val scope = rememberCoroutineScope()
     val gridState = rememberLazyGridState()
 
-    LaunchedEffect(focusSearch) {
-        if (focusSearch) {
-            delay(150)
-            runCatching { focus.requestFocus() }
+    // Reset when closed; focus the search box when opened from the search bar.
+    LaunchedEffect(open, focusSearch) {
+        if (open && focusSearch) runCatching { focus.requestFocus() }
+        if (!open) {
+            keyboard?.hide()
+            query = ""
+            gridState.scrollToItem(0)
         }
     }
 
-    val filtered = remember(apps, query, ic.data.renames) {
+    val filtered = remember(apps, query) {
         val q = query.trim()
         if (q.isEmpty()) apps
         else apps
-            .filter { ic.labelOf(it).contains(q, ignoreCase = true) || it.packageName.contains(q, ignoreCase = true) }
-            .sortedBy { !ic.labelOf(it).startsWith(q, ignoreCase = true) }
+            .filter { it.label.contains(q, ignoreCase = true) || it.app.packageName.contains(q, ignoreCase = true) }
+            .sortedBy { !it.label.startsWith(q, ignoreCase = true) }
     }
-    val letters = remember(filtered) { filtered.map { letterOf(ic.labelOf(it)) }.distinct() }
+    val letters = remember(filtered) { filtered.map { letterOf(it.label) }.distinct() }
 
-    fun launchAndClose(app: AppInfo) {
+    val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnSettle by rememberUpdatedState(onSettle)
+    val currentProgress by rememberUpdatedState(progress)
+
+    // Pull-to-close from the top of the list, and smooth hand-off of flings.
+    val connection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                // While partly closed, pushing up re-opens before the list scrolls.
+                if (available.y < 0f && currentProgress() < 1f) {
+                    currentOnDrag(available.y)
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                if (available.y > 0f && source == NestedScrollSource.UserInput) {
+                    currentOnDrag(available.y)
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (currentProgress() < 1f) {
+                    currentOnSettle(available.y)
+                    return available
+                }
+                return Velocity.Zero
+            }
+        }
+    }
+    val headerDrag = rememberDraggableState { currentOnDrag(it) }
+
+    fun launchApp(app: UiApp, rect: Rect?) {
         keyboard?.hide()
-        onLaunch(app)
+        onLaunch(app, rect)
     }
-
-    var drag by remember { mutableFloatStateOf(0f) }
 
     Column(
         Modifier
@@ -120,28 +173,22 @@ fun AppDrawer(
             .liquidGlass(
                 backdrop,
                 RoundedCornerShape(topStart = 42.dp, topEnd = 42.dp),
-                tint = Color.Black.copy(alpha = 0.30f),
-                blurRadius = 18.dp,
+                tint = Color.Black.copy(alpha = 0.32f),
+                blurRadius = 16.dp,
                 refractionHeight = 30.dp,
-                refractionAmount = 70.dp,
+                refractionAmount = 64.dp,
             )
+            .nestedScroll(connection)
             .navigationBarsPadding()
             .imePadding(),
     ) {
-        // Header: drag down here to close
+        // Header: drag here to move the drawer
         Column(
-            Modifier.pointerInput(Unit) {
-                detectVerticalDragGestures(
-                    onDragStart = { drag = 0f },
-                    onVerticalDrag = { _, dy -> drag += dy },
-                    onDragEnd = {
-                        if (drag > 120f) {
-                            keyboard?.hide()
-                            onClose()
-                        }
-                    },
-                )
-            }
+            Modifier.draggable(
+                state = headerDrag,
+                orientation = Orientation.Vertical,
+                onDragStopped = { v -> currentOnSettle(v) },
+            )
         ) {
             Box(
                 Modifier
@@ -150,11 +197,7 @@ fun AppDrawer(
                     .size(width = 44.dp, height = 5.dp)
                     .background(Color.White.copy(alpha = 0.55f), CircleShape)
             )
-
-            Row(
-                Modifier.padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     Modifier
                         .weight(1f)
@@ -181,7 +224,7 @@ fun AppDrawer(
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                             keyboardActions = KeyboardActions(onSearch = {
                                 val first = filtered.firstOrNull()
-                                if (first != null) launchAndClose(first)
+                                if (first != null) launchApp(first, null)
                                 else if (query.isNotBlank()) SystemActions.webSearch(context, query)
                             }),
                             modifier = Modifier
@@ -214,67 +257,70 @@ fun AppDrawer(
             }
         }
 
-        if (query.isBlank() && ic.settings.showSuggestions && suggestions.isNotEmpty()) {
-            Text(
-                t("Suggested", "Önerilen"),
-                style = LabelStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = 0.8f)),
-                modifier = Modifier.padding(start = 24.dp, bottom = 8.dp),
-            )
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
-            ) {
-                suggestions.forEach { app ->
-                    AppIcon(app, ic, showLabel = true, onClick = { launchAndClose(app) }, onLongClick = { onLongPress(app) })
-                }
-            }
-            Box(
-                Modifier
-                    .padding(horizontal = 24.dp, vertical = 14.dp)
-                    .fillMaxWidth()
-                    .height(1.dp)
-                    .background(Color.White.copy(alpha = 0.18f))
-            )
-        }
-
         Box(Modifier.weight(1f)) {
+            val cols = settings.drawerColumns.coerceIn(3, 9)
             LazyVerticalGrid(
-                columns = GridCells.Fixed(ic.settings.drawerColumns.coerceIn(3, 9)),
+                columns = GridCells.Fixed(cols),
                 state = gridState,
                 contentPadding = PaddingValues(start = 8.dp, end = 30.dp, top = 4.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(filtered, key = { it.key }) { app ->
+                val showSuggestions = query.isBlank() && settings.showSuggestions && suggestions.isNotEmpty()
+                if (showSuggestions) {
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "sugg-title", contentType = "title") {
+                        Text(
+                            t("Suggested", "Önerilen"),
+                            style = LabelStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = 0.8f)),
+                            modifier = Modifier.padding(start = 16.dp),
+                        )
+                    }
+                    items(suggestions, key = { "s-" + it.key }, contentType = { "app" }) { app ->
+                        Box(contentAlignment = Alignment.Center) {
+                            AppIcon(
+                                app, settings.iconSize.dp, true,
+                                dot = settings.notificationDots && app.app.packageName in dots,
+                                onClick = ::launchApp, onLongClick = onLongPress,
+                            )
+                        }
+                    }
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "sugg-line", contentType = "line") {
+                        Box(
+                            Modifier
+                                .padding(horizontal = 16.dp)
+                                .fillMaxWidth()
+                                .height(1.dp)
+                                .background(Color.White.copy(alpha = 0.18f))
+                        )
+                    }
+                }
+                items(filtered, key = { it.key }, contentType = { "app" }) { app ->
                     Box(contentAlignment = Alignment.Center) {
                         AppIcon(
-                            app, ic,
-                            showLabel = true,
-                            onClick = { launchAndClose(app) },
-                            onLongClick = { onLongPress(app) },
+                            app, settings.iconSize.dp, true,
+                            dot = settings.notificationDots && app.app.packageName in dots,
+                            onClick = ::launchApp, onLongClick = onLongPress,
                         )
                     }
                 }
                 if (query.isNotBlank()) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "web", contentType = "web") {
                         Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-                            GlassChip(
-                                t("Search the web for “$query”", "Web'de ara: “$query”"),
-                                Icons.Default.Search, backdrop,
-                            ) { SystemActions.webSearch(context, query) }
+                            GlassChip(t("Search the web for “$query”", "Web'de ara: “$query”"), Icons.Default.Search, backdrop) {
+                                SystemActions.webSearch(context, query)
+                            }
                         }
                     }
                 }
             }
 
             if (query.isBlank() && letters.size > 1) {
+                val offset = if (query.isBlank() && settings.showSuggestions && suggestions.isNotEmpty()) suggestions.size + 2 else 0
                 AlphabetScroller(
                     letters = letters,
                     onLetter = { letter ->
-                        val index = filtered.indexOfFirst { letterOf(ic.labelOf(it)) == letter }
-                        if (index >= 0) scope.launch { gridState.scrollToItem(index) }
+                        val index = filtered.indexOfFirst { letterOf(it.label) == letter }
+                        if (index >= 0) scope.launch { gridState.scrollToItem(index + offset) }
                     },
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
@@ -289,6 +335,7 @@ fun AppDrawer(
 @Composable
 private fun AlphabetScroller(letters: List<String>, onLetter: (String) -> Unit, modifier: Modifier) {
     var active by remember { mutableStateOf<String?>(null) }
+    val currentOnLetter by rememberUpdatedState(onLetter)
     Box(
         modifier
             .fillMaxHeight()
@@ -303,7 +350,7 @@ private fun AlphabetScroller(letters: List<String>, onLetter: (String) -> Unit, 
                             val i = ((y / size.height) * letters.size).toInt().coerceIn(0, letters.lastIndex)
                             if (letters[i] != active) {
                                 active = letters[i]
-                                onLetter(letters[i])
+                                currentOnLetter(letters[i])
                             }
                         }
                         val down = awaitFirstDown()

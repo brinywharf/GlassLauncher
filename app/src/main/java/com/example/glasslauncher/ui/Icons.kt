@@ -1,5 +1,6 @@
 package com.example.glasslauncher.ui
 
+import android.graphics.Rect
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -18,70 +19,58 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onPlaced
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.glasslauncher.data.AppInfo
-import com.example.glasslauncher.data.IconColorMode
-import com.example.glasslauncher.data.LauncherSettings
-import com.example.glasslauncher.data.UserData
-import com.kyant.backdrop.Backdrop
+import com.example.glasslauncher.data.UiApp
 
-/** Everything an icon needs to draw itself. */
-@Immutable
-class IconContext(
-    val settings: LauncherSettings,
-    val data: UserData,
-    val dots: Set<String>,
-    val backdrop: Backdrop,
-) {
-    fun labelOf(app: AppInfo): String = data.renames[app.key] ?: app.label
+private class CoordsHolder {
+    var coords: LayoutCoordinates? = null
 
-    fun tintOf(app: AppInfo): Color? {
-        data.colors[app.key]?.let { return Color(it) }
-        return defaultTint(app, settings)
+    fun rect(): Rect? = coords?.takeIf { it.isAttached }?.boundsInWindow()?.let {
+        Rect(it.left.toInt(), it.top.toInt(), it.right.toInt(), it.bottom.toInt())
     }
 }
 
-fun defaultTint(app: AppInfo, settings: LauncherSettings): Color? = when (settings.iconColorMode) {
-    IconColorMode.AUTO -> Color(app.autoColor)
-    IconColorMode.SINGLE -> Color(settings.iconColor)
-    IconColorMode.CLEAR -> null
-}
-
+/**
+ * One app icon. It draws a pre-rendered glass bitmap (nearly free), so a full grid
+ * scrolls and animates smoothly. The press "squish" runs entirely in the draw phase.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun AppIcon(
-    app: AppInfo,
-    ic: IconContext,
+    ui: UiApp,
+    size: Dp,
     showLabel: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    size: Dp = ic.settings.iconSize.dp,
+    dot: Boolean,
+    onClick: (UiApp, Rect?) -> Unit,
+    onLongClick: (UiApp) -> Unit,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    // Squishy press, like pressing on a drop of liquid
     val scale by animateFloatAsState(
-        if (pressed) 0.84f else 1f,
-        spring(dampingRatio = 0.38f, stiffness = 650f),
+        targetValue = if (pressed) 0.86f else 1f,
+        animationSpec = spring(dampingRatio = 0.5f, stiffness = 1400f),
         label = "press",
     )
     val haptic = LocalHapticFeedback.current
+    val holder = remember { CoordsHolder() }
 
     Column(
         Modifier
@@ -89,10 +78,10 @@ fun AppIcon(
             .combinedClickable(
                 interactionSource = interaction,
                 indication = null,
-                onClick = onClick,
+                onClick = { onClick(ui, holder.rect()) },
                 onLongClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    onLongClick()
+                    onLongClick(ui)
                 },
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -100,68 +89,38 @@ fun AppIcon(
         Box(
             Modifier
                 .size(size)
+                .onPlaced { holder.coords = it }
                 .graphicsLayer {
                     scaleX = scale
                     scaleY = scale
                 }
         ) {
-            GlassTile(
-                app = app,
-                tint = ic.tintOf(app),
-                size = size,
-                backdrop = ic.backdrop,
-                glass = ic.settings.glassIcons,
+            Image(
+                ui.icon,
+                contentDescription = ui.label,
+                filterQuality = FilterQuality.Medium,
                 modifier = Modifier.fillMaxSize(),
             )
-            if (ic.settings.notificationDots && app.packageName in ic.dots) {
+            if (dot) {
                 Box(
                     Modifier
                         .align(Alignment.TopEnd)
-                        .offset(x = 3.dp, y = (-3).dp)
-                        .size(size * 0.24f)
-                        .background(Color(app.autoColor), CircleShape)
+                        .offset(x = 2.dp, y = (-2).dp)
+                        .size(size * 0.22f)
+                        .background(Color(ui.app.autoColor), CircleShape)
                         .border(2.dp, Color.White, CircleShape)
                 )
             }
         }
         if (showLabel) {
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(5.dp))
             Text(
-                ic.labelOf(app),
+                ui.label,
                 style = LabelStyle.copy(fontSize = 12.sp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
             )
         }
-    }
-}
-
-/** The auto-generated liquid glass icon: a glass tile tinted with the app's color + its symbol. */
-@Composable
-fun GlassTile(
-    app: AppInfo,
-    tint: Color?,
-    size: Dp,
-    backdrop: Backdrop,
-    glass: Boolean,
-    modifier: Modifier = Modifier,
-) {
-    if (glass) {
-        Box(
-            modifier.liquidGlass(
-                backdrop = backdrop,
-                shape = RoundedCornerShape(size * 0.3f),
-                tint = tint?.copy(alpha = 0.48f) ?: Color.Unspecified,
-                blurRadius = 3.dp,
-                refractionHeight = size * 0.2f,
-                refractionAmount = size * 0.45f,
-            ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Image(app.glyph, contentDescription = null, modifier = Modifier.fillMaxSize())
-        }
-    } else {
-        Image(app.icon, contentDescription = null, modifier = modifier)
     }
 }

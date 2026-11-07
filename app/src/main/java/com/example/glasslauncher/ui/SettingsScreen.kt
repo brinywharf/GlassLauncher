@@ -38,7 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.glasslauncher.SystemActions
-import com.example.glasslauncher.data.AppInfo
+import com.example.glasslauncher.data.UiApp
 import com.example.glasslauncher.data.IconColorMode
 import com.example.glasslauncher.data.LauncherSettings
 import com.kyant.backdrop.Backdrop
@@ -50,7 +50,7 @@ const val REPO_URL = "https://github.com/brinywharf/GlassLauncher"
 fun SettingsScreen(
     settings: LauncherSettings,
     backdrop: Backdrop,
-    hiddenApps: List<AppInfo>,
+    hiddenApps: List<UiApp>,
     hasWallpaper: Boolean,
     onUpdate: ((LauncherSettings) -> LauncherSettings) -> Unit,
     onUnhide: (String) -> Unit,
@@ -199,7 +199,7 @@ fun SettingsScreen(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
                 GlassChip(t("Change wallpaper", "Duvar kâğıdını değiştir"), null, backdrop, onPickWallpaper)
-                if (hasWallpaper) GlassChip(t("Animated", "Hareketli"), null, backdrop, onClearWallpaper)
+                if (hasWallpaper) GlassChip(t("Default background", "Varsayılan arka plan"), null, backdrop, onClearWallpaper)
             }
 
             // ------------------------------------------------ Drawer

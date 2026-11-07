@@ -1,9 +1,15 @@
 package com.example.glasslauncher.ui
 
+import android.graphics.Rect
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +42,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -55,7 +62,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.glasslauncher.SystemActions
 import com.example.glasslauncher.WidgetController
-import com.example.glasslauncher.data.AppInfo
+import com.example.glasslauncher.data.LauncherSettings
+import com.example.glasslauncher.data.UiApp
 import com.kyant.backdrop.Backdrop
 import kotlinx.coroutines.delay
 import java.time.Instant
@@ -66,20 +74,24 @@ import kotlin.math.max
 
 @Composable
 fun HomeScreen(
-    ic: IconContext,
-    homeApps: List<AppInfo>,
-    dockApps: List<AppInfo>,
+    settings: LauncherSettings,
+    backdrop: Backdrop,
+    homeApps: List<UiApp>,
+    dockApps: List<UiApp>,
+    dots: Set<String>,
     widgetIds: List<Int>,
     widgets: WidgetController,
     homeEvent: Int,
-    onLaunch: (AppInfo) -> Unit,
-    onAppLongPress: (AppInfo) -> Unit,
-    onOpenDrawer: (focusSearch: Boolean) -> Unit,
+    onDrawerDrag: (Float) -> Unit,
+    onDrawerSettle: (Float) -> Unit,
+    onLaunch: (UiApp, Rect?) -> Unit,
+    onAppLongPress: (UiApp) -> Unit,
+    onOpenSearch: () -> Unit,
     onHomeLongPress: () -> Unit,
     onAddWidget: () -> Unit,
     onRemoveWidget: (Int) -> Unit,
 ) {
-    val s = ic.settings
+    val s = settings
     val context = LocalContext.current
     val perPage = max(1, s.homeColumns * s.homeRows)
     val appPages = max(1, (homeApps.size + perPage - 1) / perPage)
@@ -87,10 +99,16 @@ fun HomeScreen(
     val pagerState = rememberPagerState(initialPage = 1) { pageCount }
 
     LaunchedEffect(homeEvent) {
-        if (homeEvent > 0) pagerState.animateScrollToPage(1)
+        if (homeEvent > 0) pagerState.animateScrollToPage(1, animationSpec = spring(stiffness = 500f))
     }
 
-    var drag by remember { mutableFloatStateOf(0f) }
+    // One vertical gesture: up = drawer (follows the finger), down = notifications.
+    var mode by remember { mutableIntStateOf(0) } // 0 undecided, 1 drawer, 2 notifications
+    var notifDrag by remember { mutableFloatStateOf(0f) }
+    val dragState = rememberDraggableState { delta ->
+        if (mode == 0) mode = if (delta < 0f) 1 else 2
+        if (mode == 1) onDrawerDrag(delta) else notifDrag += delta
+    }
     val onDoubleTap: ((Offset) -> Unit)? =
         if (s.doubleTapLock) ({ _: Offset -> SystemActions.lockScreen(context) }) else null
 
@@ -100,16 +118,21 @@ fun HomeScreen(
             .pointerInput(s.doubleTapLock) {
                 detectTapGestures(onDoubleTap = onDoubleTap, onLongPress = { onHomeLongPress() })
             }
-            .pointerInput(s.swipeDownNotifications) {
-                detectVerticalDragGestures(
-                    onDragStart = { drag = 0f },
-                    onVerticalDrag = { _, dy -> drag += dy },
-                    onDragEnd = {
-                        if (drag < -100f) onOpenDrawer(false)
-                        else if (drag > 140f && s.swipeDownNotifications) SystemActions.expandNotifications(context)
-                    },
-                )
-            }
+            .draggable(
+                state = dragState,
+                orientation = Orientation.Vertical,
+                onDragStarted = {
+                    mode = 0
+                    notifDrag = 0f
+                },
+                onDragStopped = { velocity ->
+                    if (mode == 1) onDrawerSettle(velocity)
+                    else if (mode == 2 && notifDrag > 90f && s.swipeDownNotifications) {
+                        SystemActions.expandNotifications(context)
+                    }
+                    mode = 0
+                },
+            )
     ) {
         Column(
             Modifier
@@ -118,67 +141,62 @@ fun HomeScreen(
                 .navigationBarsPadding()
         ) {
             if (s.showGlance) {
-                GlanceCard(ic.backdrop, s.clock24h, Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                GlanceCard(backdrop, s.clock24h, Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
             }
 
             HorizontalPager(
                 state = pagerState,
+                beyondViewportPageCount = 1,
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
             ) { page ->
                 if (page == 0) {
-                    WidgetPage(widgetIds, widgets, ic.backdrop, onAddWidget, onRemoveWidget)
+                    WidgetPage(widgetIds, widgets, backdrop, onAddWidget, onRemoveWidget)
                 } else {
                     val slice = homeApps.drop((page - 1) * perPage).take(perPage)
-                    AppGridPage(slice, ic, s.homeColumns, s.homeRows, onLaunch, onAppLongPress)
+                    AppGridPage(slice, s, dots, onLaunch, onAppLongPress)
                 }
             }
 
             PageDots(pagerState.pageCount, pagerState.currentPage)
             Spacer(Modifier.height(10.dp))
 
-            Dock(dockApps, ic, onLaunch, onAppLongPress)
+            Dock(dockApps, s, dots, backdrop, onLaunch, onAppLongPress)
 
-            if (s.showSearchBar) {
-                SearchBar(ic.backdrop) { onOpenDrawer(true) }
-            } else {
-                Spacer(Modifier.height(12.dp))
-            }
+            if (s.showSearchBar) SearchBar(backdrop, onOpenSearch) else Spacer(Modifier.height(12.dp))
         }
     }
 }
 
 @Composable
 private fun AppGridPage(
-    apps: List<AppInfo>,
-    ic: IconContext,
-    cols: Int,
-    rows: Int,
-    onLaunch: (AppInfo) -> Unit,
-    onLongPress: (AppInfo) -> Unit,
+    apps: List<UiApp>,
+    s: LauncherSettings,
+    dots: Set<String>,
+    onLaunch: (UiApp, Rect?) -> Unit,
+    onLongPress: (UiApp) -> Unit,
 ) {
     Column(
         Modifier
             .fillMaxSize()
             .padding(horizontal = 8.dp, vertical = 4.dp)
     ) {
-        repeat(rows) { r ->
+        repeat(s.homeRows) { r ->
             Row(
                 Modifier
                     .fillMaxWidth()
                     .weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                repeat(cols) { c ->
-                    val app = apps.getOrNull(r * cols + c)
+                repeat(s.homeColumns) { c ->
+                    val app = apps.getOrNull(r * s.homeColumns + c)
                     Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
                         if (app != null) {
                             AppIcon(
-                                app, ic,
-                                showLabel = ic.settings.showLabels,
-                                onClick = { onLaunch(app) },
-                                onLongClick = { onLongPress(app) },
+                                app, s.iconSize.dp, s.showLabels,
+                                dot = s.notificationDots && app.app.packageName in dots,
+                                onClick = onLaunch, onLongClick = onLongPress,
                             )
                         }
                     }
@@ -191,20 +209,17 @@ private fun AppGridPage(
 @Composable
 private fun GlanceCard(backdrop: Backdrop, clock24h: Boolean, modifier: Modifier) {
     val context = LocalContext.current
+    // Only wakes up once a minute (the clock shows minutes), so it costs nothing in between.
     val now by produceState(LocalDateTime.now()) {
         while (true) {
-            value = LocalDateTime.now()
-            delay(1_000)
+            val t = LocalDateTime.now()
+            value = t
+            delay(((60 - t.second) * 1000L - t.nano / 1_000_000).coerceAtLeast(200L))
         }
     }
-    val battery by produceState(SystemActions.battery(context)) {
-        while (true) {
-            value = SystemActions.battery(context)
-            delay(30_000)
-        }
-    }
+    val battery = remember(now) { SystemActions.battery(context) }
     val timeFormat = remember(clock24h) { DateTimeFormatter.ofPattern(if (clock24h) "HH:mm" else "h:mm") }
-    val alarm = remember(now.minute, clock24h) {
+    val alarm = remember(now, clock24h) {
         SystemActions.nextAlarmMillis(context)?.let {
             LocalDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneId.systemDefault()).format(timeFormat)
         }
@@ -213,29 +228,20 @@ private fun GlanceCard(backdrop: Backdrop, clock24h: Boolean, modifier: Modifier
     Row(
         modifier
             .fillMaxWidth()
-            .liquidGlass(
-                backdrop, RoundedCornerShape(34.dp),
-                blurRadius = 4.dp, refractionHeight = 26.dp, refractionAmount = 60.dp,
-            )
+            .liquidGlass(backdrop, RoundedCornerShape(34.dp), blurRadius = 4.dp, refractionHeight = 26.dp, refractionAmount = 60.dp)
             .clickable { SystemActions.openClock(context) }
             .padding(horizontal = 24.dp, vertical = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(
-                now.format(timeFormat),
-                style = LabelStyle.copy(fontSize = 58.sp, fontWeight = FontWeight.Light),
-            )
+            Text(now.format(timeFormat), style = LabelStyle.copy(fontSize = 58.sp, fontWeight = FontWeight.Light))
             Text(
                 now.format(DateTimeFormatter.ofPattern("EEEE, d MMMM")),
                 style = LabelStyle.copy(fontSize = 16.sp, color = Color.White.copy(alpha = 0.9f)),
             )
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text(
-                (if (battery.charging) "⚡ " else "🔋 ") + "${battery.percent}%",
-                style = LabelStyle.copy(fontSize = 15.sp),
-            )
+            Text((if (battery.charging) "⚡ " else "🔋 ") + "${battery.percent}%", style = LabelStyle.copy(fontSize = 15.sp))
             if (alarm != null) {
                 Spacer(Modifier.height(4.dp))
                 Text("⏰ $alarm", style = LabelStyle.copy(fontSize = 15.sp))
@@ -246,16 +252,16 @@ private fun GlanceCard(backdrop: Backdrop, clock24h: Boolean, modifier: Modifier
 
 @Composable
 private fun PageDots(count: Int, current: Int) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Center,
-    ) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
         repeat(count) { i ->
+            val selected = i == current
+            val w by animateDpAsState(if (selected) 18.dp else 6.dp, spring(dampingRatio = 0.7f, stiffness = 900f), label = "dot")
+            val col by animateColorAsState(Color.White.copy(alpha = if (selected) 0.95f else 0.4f), label = "dotc")
             Box(
                 Modifier
-                    .padding(horizontal = 4.dp)
-                    .size(if (i == current) 8.dp else 6.dp)
-                    .background(Color.White.copy(alpha = if (i == current) 0.95f else 0.4f), CircleShape)
+                    .padding(horizontal = 3.dp)
+                    .size(width = w, height = 6.dp)
+                    .background(col, CircleShape)
             )
         }
     }
@@ -263,19 +269,18 @@ private fun PageDots(count: Int, current: Int) {
 
 @Composable
 private fun Dock(
-    apps: List<AppInfo>,
-    ic: IconContext,
-    onLaunch: (AppInfo) -> Unit,
-    onLongPress: (AppInfo) -> Unit,
+    apps: List<UiApp>,
+    s: LauncherSettings,
+    dots: Set<String>,
+    backdrop: Backdrop,
+    onLaunch: (UiApp, Rect?) -> Unit,
+    onLongPress: (UiApp) -> Unit,
 ) {
     Row(
         Modifier
             .padding(horizontal = 16.dp)
             .fillMaxWidth()
-            .liquidGlass(
-                ic.backdrop, RoundedCornerShape(36.dp),
-                blurRadius = 5.dp, refractionHeight = 24.dp, refractionAmount = 56.dp,
-            )
+            .liquidGlass(backdrop, RoundedCornerShape(36.dp), blurRadius = 5.dp, refractionHeight = 24.dp, refractionAmount = 56.dp)
             .padding(vertical = 14.dp, horizontal = 6.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
@@ -288,7 +293,11 @@ private fun Dock(
             )
         }
         apps.forEach { app ->
-            AppIcon(app, ic, showLabel = false, onClick = { onLaunch(app) }, onLongClick = { onLongPress(app) })
+            AppIcon(
+                app, s.iconSize.dp, showLabel = false,
+                dot = s.notificationDots && app.app.packageName in dots,
+                onClick = onLaunch, onLongClick = onLongPress,
+            )
         }
     }
 }
@@ -335,10 +344,9 @@ private fun WidgetPage(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             GlassChip(t("Add widget", "Widget ekle"), Icons.Default.Add, backdrop, onAdd)
             if (ids.isNotEmpty()) {
-                GlassChip(
-                    if (editing) t("Done", "Bitti") else t("Edit", "Düzenle"),
-                    Icons.Default.Edit, backdrop,
-                ) { editing = !editing }
+                GlassChip(if (editing) t("Done", "Bitti") else t("Edit", "Düzenle"), Icons.Default.Edit, backdrop) {
+                    editing = !editing
+                }
             }
         }
         if (ids.isEmpty()) {
@@ -348,27 +356,18 @@ private fun WidgetPage(
                 style = LabelStyle.copy(fontSize = 15.sp, color = Color.White.copy(alpha = 0.85f)),
             )
         }
-        ids.forEach { id ->
-            key(id) { WidgetCard(id, controller, backdrop, editing, onRemove) }
-        }
+        ids.forEach { id -> key(id) { WidgetCard(id, controller, backdrop, editing, onRemove) } }
     }
 }
 
 @Composable
-private fun WidgetCard(
-    id: Int,
-    controller: WidgetController,
-    backdrop: Backdrop,
-    editing: Boolean,
-    onRemove: (Int) -> Unit,
-) {
+private fun WidgetCard(id: Int, controller: WidgetController, backdrop: Backdrop, editing: Boolean, onRemove: (Int) -> Unit) {
     val info = remember(id) { controller.manager.getAppWidgetInfo(id) }
     if (info == null) {
         LaunchedEffect(id) { onRemove(id) }
         return
     }
-    val density = LocalDensity.current
-    val height = with(density) { info.minHeight.toDp() }.coerceAtLeast(110.dp) + 20.dp
+    val height = with(LocalDensity.current) { info.minHeight.toDp() }.coerceAtLeast(110.dp) + 20.dp
 
     Box(
         Modifier

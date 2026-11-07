@@ -4,6 +4,7 @@ import android.appwidget.AppWidgetProviderInfo
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.ExperimentalAnimationApi
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
@@ -58,6 +59,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -69,7 +71,11 @@ import androidx.compose.ui.unit.sp
 import com.example.glasslauncher.WidgetController
 import com.example.glasslauncher.WidgetProviderItem
 import com.example.glasslauncher.data.AppInfo
+import com.example.glasslauncher.data.IconColorMode
+import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.ShortcutItem
+import com.example.glasslauncher.data.UiApp
+import com.example.glasslauncher.data.UserData
 import com.kyant.backdrop.Backdrop
 
 data class MenuAction(val icon: ImageVector?, val label: String, val action: () -> Unit)
@@ -78,7 +84,7 @@ data class MenuAction(val icon: ImageVector?, val label: String, val action: () 
 @OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun GlassOverlay(visible: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
-    AnimatedVisibility(visible, enter = fadeIn(), exit = fadeOut()) {
+    AnimatedVisibility(visible, enter = fadeIn(tween(140)), exit = fadeOut(tween(120))) {
         Box(
             Modifier
                 .fillMaxSize()
@@ -90,8 +96,8 @@ fun GlassOverlay(visible: Boolean, onDismiss: () -> Unit, content: @Composable (
             Box(
                 Modifier
                     .animateEnterExit(
-                        enter = scaleIn(spring(dampingRatio = 0.55f, stiffness = 500f), initialScale = 0.8f),
-                        exit = scaleOut(targetScale = 0.9f),
+                        enter = scaleIn(spring(dampingRatio = 0.72f, stiffness = 1100f), initialScale = 0.86f),
+                        exit = scaleOut(tween(120), targetScale = 0.94f),
                     )
                     .pointerInput(Unit) { detectTapGestures { } }
             ) {
@@ -116,7 +122,7 @@ fun GlassCard(backdrop: Backdrop, width: Int = 300, content: @Composable () -> U
 }
 
 @Composable
-fun MenuRow(icon: ImageVector?, label: String, onClick: () -> Unit, iconBitmap: androidx.compose.ui.graphics.ImageBitmap? = null) {
+fun MenuRow(icon: ImageVector?, label: String, onClick: () -> Unit, iconBitmap: ImageBitmap? = null) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -166,49 +172,51 @@ fun GlassMenu(visible: Boolean, backdrop: Backdrop, title: String, items: List<M
 /** Long-press menu for an app: shortcuts + actions. */
 @Composable
 fun AppMenu(
-    app: AppInfo?,
-    ic: IconContext,
+    app: UiApp?,
+    data: UserData,
+    backdrop: Backdrop,
     loadShortcuts: suspend (AppInfo) -> List<ShortcutItem>,
     onShortcut: (ShortcutItem) -> Unit,
     onToggleHome: (AppInfo) -> Unit,
     onMoveHome: (AppInfo, Int) -> Unit,
     onToggleDock: (AppInfo) -> Unit,
-    onEdit: (AppInfo) -> Unit,
+    onEdit: (UiApp) -> Unit,
     onHide: (AppInfo) -> Unit,
     onInfo: (AppInfo) -> Unit,
     onUninstall: (AppInfo) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var last by remember { mutableStateOf<AppInfo?>(null) }
+    var last by remember { mutableStateOf<UiApp?>(null) }
     if (app != null) last = app
-    val shortcuts by produceState(emptyList<ShortcutItem>(), app) {
+    val shortcuts by produceState(emptyList<ShortcutItem>(), app?.key) {
         value = emptyList()
-        if (app != null) value = loadShortcuts(app)
+        if (app != null) value = loadShortcuts(app.app)
     }
 
     GlassOverlay(app != null, onDismiss) {
-        val a = last ?: return@GlassOverlay
-        val onHome = a.key in ic.data.home
-        val inDock = a.key in ic.data.dock
-        fun act(block: () -> Unit) = { onDismiss(); block() }
+        val ui = last ?: return@GlassOverlay
+        val a = ui.app
+        val onHome = a.key in data.home
+        val inDock = a.key in data.dock
+        fun act(block: () -> Unit): () -> Unit = { onDismiss(); block() }
 
-        GlassCard(ic.backdrop) {
+        GlassCard(backdrop) {
             Row(
                 Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                GlassTile(a, ic.tintOf(a), 44.dp, ic.backdrop, ic.settings.glassIcons, Modifier.size(44.dp))
+                Image(ui.icon, null, Modifier.size(46.dp))
                 Spacer(Modifier.width(14.dp))
                 Text(
-                    ic.labelOf(a),
+                    ui.label,
                     style = LabelStyle.copy(fontSize = 17.sp, fontWeight = FontWeight.SemiBold),
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
             if (shortcuts.isNotEmpty()) {
                 MenuDivider()
-                shortcuts.forEach { s ->
-                    MenuRow(null, s.label, onClick = act { onShortcut(s) }, iconBitmap = s.icon)
+                shortcuts.forEach { sc ->
+                    MenuRow(null, sc.label, onClick = act { onShortcut(sc) }, iconBitmap = sc.icon)
                 }
             }
             MenuDivider()
@@ -232,7 +240,7 @@ fun AppMenu(
                 if (inDock) t("Remove from dock", "Dock'tan kaldır") else t("Add to dock", "Dock'a ekle"),
                 act { onToggleDock(a) },
             )
-            MenuRow(Icons.Default.Edit, t("Edit name & icon color", "İsmi ve ikon rengini düzenle"), act { onEdit(a) })
+            MenuRow(Icons.Default.Edit, t("Edit name & icon color", "İsmi ve ikon rengini düzenle"), act { onEdit(ui) })
             MenuRow(Icons.Default.Close, t("Hide app", "Uygulamayı gizle"), act { onHide(a) })
             MenuRow(Icons.Default.Info, t("App info", "Uygulama bilgisi"), act { onInfo(a) })
             MenuRow(Icons.Default.Delete, t("Uninstall", "Kaldır"), act { onUninstall(a) })
@@ -324,36 +332,43 @@ fun ColorPicker(selected: Int?, autoLabel: String?, onSelect: (Int?) -> Unit) {
 
 @Composable
 fun EditAppDialog(
-    app: AppInfo?,
-    ic: IconContext,
+    app: UiApp?,
+    data: UserData,
+    settings: LauncherSettings,
+    backdrop: Backdrop,
+    preview: suspend (AppInfo, Int?) -> ImageBitmap,
     onSave: (AppInfo, String?, Int?) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var last by remember { mutableStateOf<AppInfo?>(null) }
+    var last by remember { mutableStateOf<UiApp?>(null) }
     if (app != null) last = app
 
     GlassOverlay(app != null, onDismiss) {
-        val a = last ?: return@GlassOverlay
-        var name by remember(a.key) { mutableStateOf(ic.data.renames[a.key] ?: a.label) }
-        var color by remember(a.key) { mutableStateOf(ic.data.colors[a.key]) }
-        val previewTint = color?.let { Color(it) } ?: defaultTint(a, ic.settings)
+        val ui = last ?: return@GlassOverlay
+        val a = ui.app
+        var name by remember(a.key) { mutableStateOf(data.renames[a.key] ?: a.label) }
+        var color by remember(a.key) { mutableStateOf(data.colors[a.key]) }
+        val tint: Int? = color ?: when (settings.iconColorMode) {
+            IconColorMode.AUTO -> a.autoColor
+            IconColorMode.SINGLE -> settings.iconColor
+            IconColorMode.CLEAR -> null
+        }
+        val previewIcon by produceState<ImageBitmap?>(ui.icon, a.key, tint) { value = preview(a, tint) }
 
-        GlassCard(ic.backdrop, width = 330) {
+        GlassCard(backdrop, width = 330) {
             Column(Modifier.padding(horizontal = 20.dp)) {
-                Text(
-                    t("Edit app", "Uygulamayı düzenle"),
-                    style = LabelStyle.copy(fontSize = 18.sp, fontWeight = FontWeight.SemiBold),
-                )
+                Text(t("Edit app", "Uygulamayı düzenle"), style = LabelStyle.copy(fontSize = 18.sp, fontWeight = FontWeight.SemiBold))
                 Spacer(Modifier.height(14.dp))
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    GlassTile(a, previewTint, 76.dp, ic.backdrop, true, Modifier.size(76.dp))
+                    previewIcon?.let { Image(it, null, Modifier.size(84.dp)) }
                 }
                 Spacer(Modifier.height(14.dp))
                 Box(
                     Modifier
                         .fillMaxWidth()
                         .height(48.dp)
-                        .liquidGlass(ic.backdrop, RoundedCornerShape(50), refractionHeight = 10.dp, refractionAmount = 22.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.White.copy(alpha = 0.14f))
                         .padding(horizontal = 18.dp),
                     contentAlignment = Alignment.CenterStart,
                 ) {
@@ -367,20 +382,17 @@ fun EditAppDialog(
                     )
                 }
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    t("Icon color", "İkon rengi"),
-                    style = LabelStyle.copy(fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)),
-                )
+                Text(t("Icon color", "İkon rengi"), style = LabelStyle.copy(fontSize = 14.sp, color = Color.White.copy(alpha = 0.85f)))
                 Spacer(Modifier.height(10.dp))
                 ColorPicker(color, t("Default", "Varsayılan")) { color = it }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    GlassChip(t("Reset", "Sıfırla"), null, ic.backdrop) {
+                    GlassChip(t("Reset", "Sıfırla"), null, backdrop) {
                         name = a.label
                         color = null
                     }
                     Spacer(Modifier.weight(1f))
-                    GlassChip(t("Save", "Kaydet"), null, ic.backdrop) {
+                    GlassChip(t("Save", "Kaydet"), null, backdrop) {
                         onSave(a, name.trim(), color)
                         onDismiss()
                     }
