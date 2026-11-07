@@ -44,6 +44,12 @@ Requires **Android 13 (API 33) or newer**.
 - Add to/remove from home or dock, reorder on home
 - Rename and recolor, hide, App info, Uninstall
 
+**New in 0.6.0**
+- Weather in the "At a glance" card for your approximate location (free data from Open-Meteo, °C/°F)
+- Calculator in search: type `12*7+3` in the drawer and tap the result to copy it
+- Polished motion: drawer icons rise in row by row, home gently zooms back in when you return from an app,
+  a haptic tick when the drawer swipe passes the opening point, touch frame-rate boost on Android 15+
+
 **Nova-style settings (0.5.0)**
 - Gestures: swipe up / swipe down / double-tap → app drawer, notifications, quick settings, lock screen,
   search, launcher settings or any app
@@ -82,3 +88,9 @@ the APK and publishes it as a release.
 
 `ui/Glass.kt` → `Modifier.liquidGlass(...)` defines the material: `lens()` refraction, `blur()`,
 `vibrancy()`, plus a frost wash and a specular rim drawn on the surface.
+
+## License
+
+Copyright © 2026 Anıl. **All rights reserved**: the source is visible for reference only, see [LICENSE](LICENSE).
+Third-party components keep their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Weather data by [Open-Meteo.com](https://open-meteo.com) (CC BY 4.0).

@@ -313,6 +313,14 @@ private fun HomePage(
     ) { v -> onUpdate { it.copy(searchBarPos = v) } }
     SettingSwitch(t("“At a glance” card", "“Bir bakışta” kartı"), null, s.showGlance) { v -> onUpdate { it.copy(showGlance = v) } }
     SettingSwitch(t("24-hour clock", "24 saat biçimi"), null, s.clock24h) { v -> onUpdate { it.copy(clock24h = v) } }
+    SettingSwitch(
+        t("Weather", "Hava durumu"),
+        t("Free data from Open-Meteo, for your approximate location", "Open-Meteo'dan ücretsiz veri, yaklaşık konumuna göre"),
+        s.showWeather,
+    ) { v -> onUpdate { it.copy(showWeather = v) } }
+    if (s.showWeather) {
+        ChoiceChips(listOf(false to "°C", true to "°F"), s.weatherFahrenheit) { v -> onUpdate { it.copy(weatherFahrenheit = v) } }
+    }
     SettingSwitch(t("Page indicator", "Sayfa göstergesi"), null, s.showPageDots) { v -> onUpdate { it.copy(showPageDots = v) } }
     SettingSwitch(
         t("Add new apps to home screen", "Yeni uygulamaları ana ekrana ekle"), null, s.addNewAppsToHome,
@@ -519,6 +527,10 @@ private fun AboutPage(backdrop: Backdrop) {
     Hint(
         t("Alpha build: features may change, break or disappear between updates.",
             "Alpha sürüm: özellikler güncellemeler arasında değişebilir veya bozulabilir.")
+    )
+    Hint(
+        t("Weather data by Open-Meteo.com (CC BY 4.0). Liquid glass effect by Kyant's backdrop library (Apache 2.0).",
+            "Hava durumu verisi: Open-Meteo.com (CC BY 4.0). Sıvı cam efekti: Kyant'ın backdrop kütüphanesi (Apache 2.0).")
     )
     Spacer(Modifier.height(12.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {

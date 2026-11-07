@@ -1,9 +1,11 @@
 package com.example.glasslauncher.ui
 
+import android.Manifest
 import android.app.Activity
 import android.app.ActivityOptions
 import android.graphics.Rect
 import android.os.SystemClock
+import android.view.HapticFeedbackConstants
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -54,6 +56,8 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.glasslauncher.LauncherViewModel
@@ -63,6 +67,7 @@ import com.example.glasslauncher.data.DrawerSort
 import com.example.glasslauncher.data.GestureAction
 import com.example.glasslauncher.data.OpenAnim
 import com.example.glasslauncher.data.UiApp
+import com.example.glasslauncher.data.WeatherSource
 import com.example.glasslauncher.services.NotificationDots
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
@@ -88,6 +93,13 @@ fun LauncherApp(
     val data by vm.userData.collectAsStateWithLifecycle()
     val wallpaper by vm.wallpaper.collectAsStateWithLifecycle()
     val rawDots by NotificationDots.packages.collectAsStateWithLifecycle()
+    val weather by vm.weather.collectAsStateWithLifecycle()
+    var hasLocation by remember { mutableStateOf(WeatherSource.hasPermission(context)) }
+    val locationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        hasLocation = granted
+        if (granted) vm.refreshWeather(force = true)
+    }
+    LaunchedEffect(settings.showWeather, settings.weatherFahrenheit) { vm.refreshWeather() }
     val dots = if (settings.notificationDots) rawDots else emptySet()
 
     LaunchedEffect(widgets) { widgets.onWidgetAdded = { vm.addWidget(it) } }
@@ -114,7 +126,12 @@ fun LauncherApp(
 
     fun dragDrawer(dy: Float) {
         drawerWarm = true
-        scope.launch { drawer.snapTo((drawer.value - dy / heightPx).coerceIn(0f, 1f)) }
+        val before = drawer.value
+        val after = (before - dy / heightPx).coerceIn(0f, 1f)
+        if (settings.haptics && (before < 0.45f) != (after < 0.45f)) {
+            view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+        }
+        scope.launch { drawer.snapTo(after) }
     }
 
     fun settleDrawer(vy: Float) {
@@ -137,6 +154,19 @@ fun LauncherApp(
     fun closeDrawer() {
         drawerFocusSearch = false
         scope.launch { drawer.animateTo(0f, drawerSpring) }
+    }
+
+    // ------------------------------------------------ Return-to-home reveal
+    val reveal = remember { Animatable(1f) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        hasLocation = WeatherSource.hasPermission(context)
+        vm.refreshWeather()
+        if (!drawerShown) {
+            scope.launch {
+                reveal.snapTo(0.94f)
+                reveal.animateTo(1f, fluidSpring(uiPrefs, dampingRatio = 0.72f, stiffness = 320f))
+            }
+        }
     }
 
     // ------------------------------------------------ Overlays
@@ -295,7 +325,8 @@ fun LauncherApp(
                             val p = drawer.value.coerceIn(0f, 1f)
                             alpha = 1f - p
                             translationY = -p * 80.dp.toPx()
-                            val sc = 1f - 0.06f * p
+                            val r = reveal.value
+                            val sc = (1f - 0.06f * p) * r
                             scaleX = sc
                             scaleY = sc
                             compositingStrategy = CompositingStrategy.ModulateAlpha
@@ -323,6 +354,12 @@ fun LauncherApp(
                         onRemoveWidget = { id ->
                             widgets.remove(id)
                             vm.removeWidget(id)
+                        },
+                        weather = weather,
+                        weatherNeedsPermission = !hasLocation,
+                        onWeatherClick = {
+                            if (!hasLocation) locationPermission.launch(Manifest.permission.ACCESS_COARSE_LOCATION)
+                            else SystemActions.webSearch(context, t("weather", "hava durumu") + (weather?.city?.let { " $it" } ?: ""))
                         },
                     )
                 }

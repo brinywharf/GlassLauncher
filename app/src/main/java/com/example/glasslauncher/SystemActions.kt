@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.BatteryManager
+import android.os.Build
 import android.provider.AlarmClock
 import android.provider.Settings
 import android.widget.Toast
@@ -67,6 +68,15 @@ object SystemActions {
             ScreenOrientation.LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         }
         if (activity.requestedOrientation != wanted) activity.requestedOrientation = wanted
+
+        // Android 15+: jump to the top refresh rate the moment a finger touches the screen,
+        // and don't let power saving quietly lower it while animating.
+        if (Build.VERSION.SDK_INT >= 35) {
+            runCatching {
+                window.setFrameRateBoostOnTouchEnabled(true)
+                window.setFrameRatePowerSavingsBalanced(!maxRefresh)
+            }
+        }
 
         runCatching {
             val display = activity.display ?: return@runCatching

@@ -34,8 +34,11 @@ import com.example.glasslauncher.data.ShortcutItem
 import com.example.glasslauncher.data.UiApp
 import com.example.glasslauncher.data.UserData
 import com.example.glasslauncher.data.UserDataStore
+import com.example.glasslauncher.data.Weather
+import com.example.glasslauncher.data.WeatherSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -86,6 +89,28 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         .mapLatest { (raw, style, custom) -> buildUi(raw, style, custom.first, custom.second) }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyMap())
 
+    // ---------------------------------------------------------------- Weather (Open-Meteo)
+    private val weatherPrefs = app.getSharedPreferences("weather", Context.MODE_PRIVATE)
+    private val _weather = MutableStateFlow(Weather.fromJson(weatherPrefs.getString("last", null)))
+    val weather: StateFlow<Weather?> = _weather.asStateFlow()
+    private var weatherJob: Job? = null
+
+    /** Refreshes if older than 30 minutes (or always when forced / units changed). */
+    fun refreshWeather(force: Boolean = false) {
+        val s = settings.value
+        if (!s.showWeather || !WeatherSource.hasPermission(context)) return
+        val current = _weather.value
+        val fresh = current != null && current.fahrenheit == s.weatherFahrenheit &&
+            System.currentTimeMillis() - current.fetchedAt < 30 * 60_000L
+        if (fresh && !force) return
+        if (weatherJob?.isActive == true) return
+        weatherJob = viewModelScope.launch {
+            val w = WeatherSource.fetch(context, s.weatherFahrenheit) ?: return@launch
+            _weather.value = w
+            weatherPrefs.edit().putString("last", w.toJson()).apply()
+        }
+    }
+
     private val _wallpaper = MutableStateFlow<ImageBitmap?>(null)
     val wallpaper: StateFlow<ImageBitmap?> = _wallpaper.asStateFlow()
 
@@ -105,6 +130,13 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             if (!dataStore.state.value.initialized && all.isNotEmpty()) initDefaults(all.values.toList())
         }
         viewModelScope.launch { _wallpaper.value = decodeWallpaper() }
+        // Keep the weather fresh while the launcher is alive
+        viewModelScope.launch {
+            while (true) {
+                refreshWeather()
+                kotlinx.coroutines.delay(10 * 60_000L)
+            }
+        }
     }
 
     override fun onCleared() {

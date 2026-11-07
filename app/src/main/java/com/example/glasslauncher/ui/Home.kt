@@ -69,6 +69,9 @@ import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.PageEffect
 import com.example.glasslauncher.data.SearchBarPos
 import com.example.glasslauncher.data.UiApp
+import com.example.glasslauncher.data.Weather
+import com.example.glasslauncher.data.weatherEmoji
+import com.example.glasslauncher.data.weatherText
 import com.kyant.backdrop.Backdrop
 import kotlinx.coroutines.delay
 import java.time.Instant
@@ -77,6 +80,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 
 @Composable
 fun HomeScreen(
@@ -97,6 +101,9 @@ fun HomeScreen(
     onHomeLongPress: () -> Unit,
     onAddWidget: () -> Unit,
     onRemoveWidget: (Int) -> Unit,
+    weather: Weather? = null,
+    weatherNeedsPermission: Boolean = false,
+    onWeatherClick: () -> Unit = {},
 ) {
     val s = settings
     val prefs = LocalUiPrefs.current
@@ -151,7 +158,13 @@ fun HomeScreen(
                 .navigationBarsPadding()
         ) {
             if (s.showGlance) {
-                GlanceCard(backdrop, s.clock24h, Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
+                GlanceCard(
+                    backdrop, s.clock24h,
+                    weather = if (s.showWeather) weather else null,
+                    askWeather = s.showWeather && weatherNeedsPermission,
+                    onWeatherClick = onWeatherClick,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                )
             }
             if (s.searchBarPos == SearchBarPos.TOP) SearchBar(backdrop, onOpenSearch)
 
@@ -264,7 +277,14 @@ private fun AppGridPage(
 }
 
 @Composable
-private fun GlanceCard(backdrop: Backdrop, clock24h: Boolean, modifier: Modifier) {
+private fun GlanceCard(
+    backdrop: Backdrop,
+    clock24h: Boolean,
+    weather: Weather?,
+    askWeather: Boolean,
+    onWeatherClick: () -> Unit,
+    modifier: Modifier,
+) {
     val context = LocalContext.current
     // Only wakes up once a minute (the clock shows minutes), so it costs nothing in between.
     val now by produceState(LocalDateTime.now()) {
@@ -281,27 +301,52 @@ private fun GlanceCard(backdrop: Backdrop, clock24h: Boolean, modifier: Modifier
             LocalDateTime.ofInstant(Instant.ofEpochMilli(it), ZoneId.systemDefault()).format(timeFormat)
         }
     }
+    val small = LabelStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.9f))
 
     Row(
         modifier
             .fillMaxWidth()
             .liquidGlass(backdrop, RoundedCornerShape(34.dp), blurRadius = 4.dp, refractionHeight = 26.dp, refractionAmount = 60.dp)
-            .clickable { SystemActions.openClock(context) }
-            .padding(horizontal = 24.dp, vertical = 18.dp),
+            .padding(horizontal = 22.dp, vertical = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(now.format(timeFormat), style = LabelStyle.copy(fontSize = 58.sp, fontWeight = FontWeight.Light))
+        Column(
+            Modifier
+                .weight(1f)
+                .clickable(interactionSource = null, indication = null) { SystemActions.openClock(context) },
+        ) {
+            Text(now.format(timeFormat), style = LabelStyle.copy(fontSize = 56.sp, fontWeight = FontWeight.Light))
             Text(
                 now.format(DateTimeFormatter.ofPattern("EEEE, d MMMM")),
-                style = LabelStyle.copy(fontSize = 16.sp, color = Color.White.copy(alpha = 0.9f)),
+                style = LabelStyle.copy(fontSize = 15.sp, color = Color.White.copy(alpha = 0.9f)),
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                buildString {
+                    append(if (battery.charging) "⚡ " else "🔋 ")
+                    append("${battery.percent}%")
+                    if (alarm != null) append("   ⏰ $alarm")
+                },
+                style = small,
             )
         }
-        Column(horizontalAlignment = Alignment.End) {
-            Text((if (battery.charging) "⚡ " else "🔋 ") + "${battery.percent}%", style = LabelStyle.copy(fontSize = 15.sp))
-            if (alarm != null) {
-                Spacer(Modifier.height(4.dp))
-                Text("⏰ $alarm", style = LabelStyle.copy(fontSize = 15.sp))
+        if (weather != null || askWeather) {
+            Column(
+                Modifier.clickable(interactionSource = null, indication = null, onClick = onWeatherClick),
+                horizontalAlignment = Alignment.End,
+            ) {
+                if (weather != null) {
+                    Text(
+                        "${weatherEmoji(weather.code, weather.isDay)} ${weather.temp.roundToInt()}°",
+                        style = LabelStyle.copy(fontSize = 30.sp, fontWeight = FontWeight.Light),
+                    )
+                    val (en, tr) = weatherText(weather.code)
+                    Text(weather.city ?: t(en, tr), style = small, maxLines = 1)
+                    Text("↑${weather.high.roundToInt()}°  ↓${weather.low.roundToInt()}°", style = small)
+                } else {
+                    Text("📍", style = LabelStyle.copy(fontSize = 26.sp))
+                    Text(t("Tap for weather", "Hava durumu için dokun"), style = small)
+                }
             }
         }
     }

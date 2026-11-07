@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -57,6 +58,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -71,6 +73,9 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.glasslauncher.SystemActions
+import android.content.ClipData
+import android.content.ClipboardManager
+import com.example.glasslauncher.data.Calc
 import com.example.glasslauncher.data.DrawerSort
 import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.UiApp
@@ -80,6 +85,21 @@ import kotlinx.coroutines.launch
 private fun letterOf(label: String): String {
     val c = label.trim().firstOrNull()?.uppercaseChar() ?: return "#"
     return if (c.isLetter()) c.toString() else "#"
+}
+
+/** Rows rise and fade in one after another while the drawer opens. Pure draw-phase work. */
+private fun Modifier.stagger(row: Int, progress: () -> Float): Modifier = graphicsLayer {
+    val p = progress().coerceIn(0f, 1f)
+    if (p >= 1f) return@graphicsLayer
+    val delay = row.coerceIn(0, 6) * 0.06f
+    val local = ((p - delay) / (1f - delay)).coerceIn(0f, 1f)
+    val eased = 1f - (1f - local) * (1f - local)
+    alpha = eased
+    translationY = (1f - eased) * 56.dp.toPx()
+    val sc = 0.9f + 0.1f * eased
+    scaleX = sc
+    scaleY = sc
+    compositingStrategy = CompositingStrategy.ModulateAlpha
 }
 
 /**
@@ -129,6 +149,7 @@ fun AppDrawer(
             .sortedBy { !it.label.startsWith(q, ignoreCase = true) }
     }
     val letters = remember(filtered) { filtered.map { letterOf(it.label) }.distinct() }
+    val calc = remember(query) { Calc.evaluate(query) }
 
     val currentOnDrag by rememberUpdatedState(onDrag)
     val currentOnSettle by rememberUpdatedState(onSettle)
@@ -285,7 +306,7 @@ fun AppDrawer(
                         )
                     }
                     items(suggestions, key = { "s-" + it.key }, contentType = { "app" }) { app ->
-                        Box(contentAlignment = Alignment.Center) {
+                        Box(Modifier.stagger(0, currentProgress), contentAlignment = Alignment.Center) {
                             AppIcon(
                                 app, settings.iconSize.dp, settings.drawerLabels,
                                 dot = settings.notificationDots && app.app.packageName in dots,
@@ -303,8 +324,30 @@ fun AppDrawer(
                         )
                     }
                 }
-                items(filtered, key = { it.key }, contentType = { "app" }) { app ->
-                    Box(contentAlignment = Alignment.Center) {
+                if (calc != null) {
+                    item(span = { GridItemSpan(maxLineSpan) }, key = "calc", contentType = "calc") {
+                        Row(
+                            Modifier
+                                .padding(horizontal = 12.dp)
+                                .fillMaxWidth()
+                                .frostedControl(RoundedCornerShape(22.dp))
+                                .clip(RoundedCornerShape(22.dp))
+                                .clickable {
+                                    context.getSystemService(ClipboardManager::class.java)
+                                        ?.setPrimaryClip(ClipData.newPlainText("result", calc))
+                                    SystemActions.toast(context, t("Copied", "Kopyalandı"))
+                                }
+                                .padding(horizontal = 20.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("= ", style = PlainStyle.copy(fontSize = 26.sp, color = Color.White.copy(alpha = 0.6f)))
+                            Text(calc, style = PlainStyle.copy(fontSize = 26.sp, fontWeight = FontWeight.SemiBold), modifier = Modifier.weight(1f), maxLines = 1)
+                            Text(t("tap to copy", "kopyalamak için dokun"), style = PlainStyle.copy(fontSize = 12.sp, color = Color.White.copy(alpha = 0.6f)))
+                        }
+                    }
+                }
+                itemsIndexed(filtered, key = { _, it -> it.key }, contentType = { _, _ -> "app" }) { index, app ->
+                    Box(Modifier.stagger(index / cols + if (showSuggestions) 1 else 0, currentProgress), contentAlignment = Alignment.Center) {
                         AppIcon(
                             app, settings.iconSize.dp, settings.drawerLabels,
                             dot = settings.notificationDots && app.app.packageName in dots,
@@ -324,7 +367,7 @@ fun AppDrawer(
             }
 
             if (settings.drawerFastScroll && settings.drawerSort == DrawerSort.ALPHABETICAL && query.isBlank() && letters.size > 1) {
-                val offset = if (query.isBlank() && settings.showSuggestions && suggestions.isNotEmpty()) suggestions.size + 2 else 0
+                val offset = if (settings.showSuggestions && suggestions.isNotEmpty()) suggestions.size + 2 else 0
                 AlphabetScroller(
                     letters = letters,
                     onLetter = { letter ->
