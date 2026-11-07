@@ -50,6 +50,16 @@ data class GlassConfig(
 
 val LocalGlass = compositionLocalOf { GlassConfig() }
 
+/** Motion & feel preferences available to every composable. */
+@Immutable
+data class UiPrefs(val speed: Float = 1f, val haptics: Boolean = true)
+
+val LocalUiPrefs = compositionLocalOf { UiPrefs() }
+
+/** A spring whose speed follows the "Animation speed" setting (stiffness scales with speed²). */
+fun <T> fluidSpring(prefs: UiPrefs, dampingRatio: Float, stiffness: Float) =
+    androidx.compose.animation.core.spring<T>(dampingRatio = dampingRatio, stiffness = stiffness * prefs.speed * prefs.speed)
+
 /** Text over the wallpaper: a small shadow keeps it readable. */
 val LabelStyle = TextStyle(
     color = Color.White,

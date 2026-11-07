@@ -35,6 +35,7 @@ class AppInfo(
     val glyph: Bitmap,
     /** Color picked automatically from the app's icon. */
     val autoColor: Int,
+    val installTime: Long = 0L,
 ) {
     val key: String = "$packageName/$activityName"
 }
@@ -221,7 +222,41 @@ object IconBaker {
 
     private const val OUT = IconFactory.PX
 
-    fun bake(glyph: Bitmap, tint: Int?): Bitmap {
+    /** The tile outline for each icon shape. */
+    fun shapePath(shape: IconShape, rect: RectF): Path {
+        val w = rect.width()
+        return Path().apply {
+            when (shape) {
+                IconShape.CIRCLE -> addOval(rect, Path.Direction.CW)
+                IconShape.ROUNDED -> addRoundRect(rect, w * 0.22f, w * 0.22f, Path.Direction.CW)
+                IconShape.SQUARE -> addRoundRect(rect, w * 0.10f, w * 0.10f, Path.Direction.CW)
+                IconShape.TEARDROP -> {
+                    val r = w * 0.5f
+                    val s = w * 0.14f
+                    addRoundRect(rect, floatArrayOf(r, r, r, r, s, s, r, r), Path.Direction.CW)
+                }
+                IconShape.SQUIRCLE -> {
+                    // Superellipse (n = 5): the smooth "continuous corner" shape
+                    val cx = rect.centerX()
+                    val cy = rect.centerY()
+                    val a = w / 2f
+                    val n = 5.0
+                    val steps = 96
+                    for (i in 0..steps) {
+                        val t = 2.0 * Math.PI * i / steps
+                        val c = Math.cos(t)
+                        val sn = Math.sin(t)
+                        val x = cx + a * Math.signum(c) * Math.pow(Math.abs(c), 2.0 / n)
+                        val y = cy + a * Math.signum(sn) * Math.pow(Math.abs(sn), 2.0 / n)
+                        if (i == 0) moveTo(x.toFloat(), y.toFloat()) else lineTo(x.toFloat(), y.toFloat())
+                    }
+                    close()
+                }
+            }
+        }
+    }
+
+    fun bake(glyph: Bitmap, tint: Int?, shape: IconShape = IconShape.SQUIRCLE): Bitmap {
         val out = OUT
         val bmp = Bitmap.createBitmap(out, out, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)
@@ -229,8 +264,7 @@ object IconBaker {
         val rect = RectF(pad, pad, out - pad, out - pad)
         val w = rect.width()
         val h = rect.height()
-        val radius = w * 0.30f
-        val path = Path().apply { addRoundRect(rect, radius, radius, Path.Direction.CW) }
+        val path = shapePath(shape, rect)
 
         // 1) Soft outer shadow only (punch out the inside so it doesn't darken the glass)
         val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -301,10 +335,10 @@ object IconBaker {
             )
         }
         val inner = RectF(rect).apply { inset(stroke / 2, stroke / 2) }
-        c.drawRoundRect(inner, radius - stroke / 2, radius - stroke / 2, rim)
+        c.drawPath(shapePath(shape, inner), rim)
 
-        bmp.prepareToDraw()
-        return bmp
+        // Move it to GPU memory: drawing it then costs nothing on the CPU.
+        return bmp.copy(Bitmap.Config.HARDWARE, false) ?: bmp.also { it.prepareToDraw() }
     }
 
     private fun withAlpha(color: Int, alpha: Int) =

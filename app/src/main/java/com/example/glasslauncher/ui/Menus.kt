@@ -96,7 +96,7 @@ fun GlassOverlay(visible: Boolean, onDismiss: () -> Unit, content: @Composable (
             Box(
                 Modifier
                     .animateEnterExit(
-                        enter = scaleIn(spring(dampingRatio = 0.72f, stiffness = 1100f), initialScale = 0.86f),
+                        enter = scaleIn(fluidSpring(LocalUiPrefs.current, 0.72f, 1100f), initialScale = 0.86f),
                         exit = scaleOut(tween(120), targetScale = 0.94f),
                     )
                     .pointerInput(Unit) { detectTapGestures { } }

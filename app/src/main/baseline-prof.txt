@@ -1,0 +1,5 @@
+# Ask ART to compile all of Glass Launcher's own code ahead of time (no JIT warm-up jank).
+HSPLcom/example/glasslauncher/**;->**(**)**
+Lcom/example/glasslauncher/**;
+HSPLcom/kyant/backdrop/**;->**(**)**
+Lcom/kyant/backdrop/**;

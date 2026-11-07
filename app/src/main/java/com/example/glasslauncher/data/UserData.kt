@@ -31,6 +31,13 @@ class UserDataStore(context: Context) {
         _state.value = next
     }
 
+    fun exportJson(): JSONObject = PrefsJson.export(prefs)
+
+    fun importJson(o: JSONObject) {
+        PrefsJson.import(prefs, o)
+        _state.value = load()
+    }
+
     private fun load() = UserData(
         initialized = prefs.getBoolean("initialized", false),
         home = prefs.getString("home", null).toStringList(),

@@ -1,5 +1,6 @@
 package com.example.glasslauncher.ui
 
+import android.app.Activity
 import android.app.ActivityOptions
 import android.graphics.Rect
 import android.os.SystemClock
@@ -52,11 +53,15 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.glasslauncher.LauncherViewModel
 import com.example.glasslauncher.SystemActions
 import com.example.glasslauncher.WidgetController
+import com.example.glasslauncher.data.DrawerSort
+import com.example.glasslauncher.data.GestureAction
+import com.example.glasslauncher.data.OpenAnim
 import com.example.glasslauncher.data.UiApp
 import com.example.glasslauncher.services.NotificationDots
 import com.kyant.backdrop.backdrops.layerBackdrop
@@ -87,10 +92,17 @@ fun LauncherApp(
 
     LaunchedEffect(widgets) { widgets.onWidgetAdded = { vm.addWidget(it) } }
 
+    LaunchedEffect(settings.hideStatusBar, settings.orientation, settings.maxRefreshRate) {
+        (context as? Activity)?.let {
+            SystemActions.applyWindowPrefs(it, settings.hideStatusBar, settings.orientation, settings.maxRefreshRate)
+        }
+    }
+
     // ------------------------------------------------ Drawer physics (0 = closed, 1 = open)
     val drawer = remember { Animatable(0f) }
     var heightPx by remember { mutableFloatStateOf(2400f) }
-    val drawerSpring = remember { spring<Float>(dampingRatio = 0.9f, stiffness = 520f) }
+    val uiPrefs = UiPrefs(settings.animSpeed.factor, settings.haptics)
+    val drawerSpring = fluidSpring<Float>(uiPrefs, dampingRatio = 0.9f, stiffness = 520f)
     val drawerShown by remember { derivedStateOf { drawer.value > 0.001f } }
     var drawerWarm by remember { mutableStateOf(false) }
     var drawerFocusSearch by remember { mutableStateOf(false) }
@@ -174,11 +186,18 @@ fun LauncherApp(
     val dockApps = remember(apps, data.dock, data.hidden, settings.dockCount) {
         data.dock.filter { it !in data.hidden }.mapNotNull { apps[it] }.take(settings.dockCount)
     }
-    val drawerApps = remember(apps, data.hidden) {
+    val sortedApps = remember(apps, data.hidden) {
         apps.values.filter { it.key !in data.hidden }.sortedBy { it.label.lowercase() }
     }
-    val suggestions = remember(drawerApps, data.launches, settings.drawerColumns) {
-        drawerApps
+    val drawerApps = remember(sortedApps, settings.drawerSort, if (settings.drawerSort == DrawerSort.MOST_USED) data.launches else null) {
+        when (settings.drawerSort) {
+            DrawerSort.ALPHABETICAL -> sortedApps
+            DrawerSort.MOST_USED -> sortedApps.sortedByDescending { data.launches[it.key] ?: 0 }
+            DrawerSort.NEWEST -> sortedApps.sortedByDescending { it.app.installTime }
+        }
+    }
+    val suggestions = remember(sortedApps, data.launches, settings.drawerColumns) {
+        sortedApps
             .filter { (data.launches[it.key] ?: 0) > 0 }
             .sortedByDescending { data.launches[it.key] ?: 0 }
             .take(settings.drawerColumns.coerceIn(3, 9))
@@ -189,7 +208,11 @@ fun LauncherApp(
     val launchApp: (UiApp, Rect?) -> Unit = { ui, rect ->
         // Zoom the app out of its icon
         val options = rect?.let {
-            ActivityOptions.makeScaleUpAnimation(view, it.left, it.top, it.width(), it.height()).toBundle()
+            when (settings.openAnim) {
+                OpenAnim.ZOOM -> ActivityOptions.makeScaleUpAnimation(view, it.left, it.top, it.width(), it.height()).toBundle()
+                OpenAnim.REVEAL -> ActivityOptions.makeClipRevealAnimation(view, it.left, it.top, it.width(), it.height()).toBundle()
+                OpenAnim.SYSTEM -> null
+            }
         }
         vm.launch(ui.app, rect, options)
         if (drawerShown) {
@@ -200,6 +223,34 @@ fun LauncherApp(
             }
         }
     }
+    fun runAction(action: GestureAction, appKey: String) {
+        when (action) {
+            GestureAction.NONE -> Unit
+            GestureAction.APP_DRAWER -> openDrawer(search = false)
+            GestureAction.NOTIFICATIONS -> SystemActions.expandNotifications(context)
+            GestureAction.QUICK_SETTINGS -> SystemActions.expandQuickSettings(context)
+            GestureAction.LOCK_SCREEN -> SystemActions.lockScreen(context)
+            GestureAction.SEARCH -> openDrawer(search = true)
+            GestureAction.LAUNCHER_SETTINGS -> settingsOpen = true
+            GestureAction.OPEN_APP -> apps[appKey]?.let { vm.launch(it.app, null, null) }
+        }
+    }
+    val onGesture: (HomeGesture) -> Unit = { g ->
+        when (g) {
+            HomeGesture.SWIPE_UP -> runAction(settings.swipeUp, settings.swipeUpApp)
+            HomeGesture.SWIPE_DOWN -> runAction(settings.swipeDown, settings.swipeDownApp)
+            HomeGesture.DOUBLE_TAP -> runAction(settings.doubleTap, settings.doubleTapApp)
+        }
+    }
+
+    // Backup & restore files
+    val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) vm.exportBackup(uri)
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importBackup(uri)
+    }
+
     val onAppLongPress: (UiApp) -> Unit = {
         lastIconLongPress = SystemClock.uptimeMillis()
         homeMenuOpen = false
@@ -209,7 +260,7 @@ fun LauncherApp(
     val glass = GlassConfig(settings.refraction, settings.blur, settings.frost, settings.rimLight)
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Color.White, background = Color.Transparent)) {
-        CompositionLocalProvider(LocalGlass provides glass) {
+        CompositionLocalProvider(LocalGlass provides glass, LocalUiPrefs provides uiPrefs) {
             // Everything drawn into this backdrop is what the glass refracts.
             val backdrop = rememberLayerBackdrop()
 
@@ -243,6 +294,7 @@ fun LauncherApp(
                         .graphicsLayer {
                             val p = drawer.value.coerceIn(0f, 1f)
                             alpha = 1f - p
+                            translationY = -p * 80.dp.toPx()
                             val sc = 1f - 0.06f * p
                             scaleX = sc
                             scaleY = sc
@@ -260,6 +312,7 @@ fun LauncherApp(
                         homeEvent = homeEvent,
                         onDrawerDrag = ::dragDrawer,
                         onDrawerSettle = ::settleDrawer,
+                        onGesture = onGesture,
                         onLaunch = launchApp,
                         onAppLongPress = onAppLongPress,
                         onOpenSearch = { openDrawer(search = true) },
@@ -313,11 +366,12 @@ fun LauncherApp(
                     )
                     SettingsScreen(
                         modifier = Modifier.animateEnterExit(
-                            enter = slideInVertically(spring(dampingRatio = 0.86f, stiffness = 480f)) { it },
-                            exit = slideOutVertically(spring(dampingRatio = 1f, stiffness = 650f)) { it },
+                            enter = slideInVertically(fluidSpring(uiPrefs, 0.86f, 480f)) { it },
+                            exit = slideOutVertically(fluidSpring(uiPrefs, 1f, 650f)) { it },
                         ),
                         settings = settings,
                         backdrop = backdrop,
+                        apps = sortedApps,
                         hiddenApps = hiddenApps,
                         hasWallpaper = wallpaper != null,
                         onUpdate = vm::updateSettings,
@@ -326,6 +380,8 @@ fun LauncherApp(
                         onResetSettings = vm::resetSettings,
                         onPickWallpaper = launchPicker,
                         onClearWallpaper = vm::clearWallpaper,
+                        onExport = { exportLauncher.launch("glass-launcher-backup.json") },
+                        onImport = { importLauncher.launch(arrayOf("application/json", "*/*")) },
                         onClose = { settingsOpen = false },
                     )
                 }

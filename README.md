@@ -44,6 +44,17 @@ Requires **Android 13 (API 33) or newer**.
 - Add to/remove from home or dock, reorder on home
 - Rename and recolor, hide, App info, Uninstall
 
+**Nova-style settings (0.5.0)**
+- Gestures: swipe up / swipe down / double-tap → app drawer, notifications, quick settings, lock screen,
+  search, launcher settings or any app
+- Page transitions: slide, cube, card stack, zoom, rotate, fade
+- Icon shapes: squircle, rounded, circle, square, teardrop · icon & label size
+- Animation speed (relaxed → faster), app open animation (zoom / circle reveal / system), haptics toggle
+- Drawer: sort A–Z / most used / newest, labels, suggestions, fast scroller, background darkness
+- Dock: show/hide, glass background, size · Search bar: bottom / top / hidden · page indicator
+- Add new apps to home automatically · hide status bar · rotation · maximum refresh rate (120/144 Hz)
+- Backup & restore of the whole setup to a JSON file
+
 **Other**
 - Notification dots (needs notification access)
 - Hidden apps list

@@ -71,6 +71,7 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.glasslauncher.SystemActions
+import com.example.glasslauncher.data.DrawerSort
 import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.UiApp
 import com.kyant.backdrop.Backdrop
@@ -175,7 +176,7 @@ fun AppDrawer(
         Modifier
             .fillMaxSize()
             .graphicsLayer { alpha = currentProgress().coerceIn(0f, 1f) }
-            .frosted(frost, dim = 0.30f)
+            .frosted(frost, dim = settings.drawerDim)
     )
     // Content follows the finger 1:1
     Column(
@@ -286,9 +287,9 @@ fun AppDrawer(
                     items(suggestions, key = { "s-" + it.key }, contentType = { "app" }) { app ->
                         Box(contentAlignment = Alignment.Center) {
                             AppIcon(
-                                app, settings.iconSize.dp, true,
+                                app, settings.iconSize.dp, settings.drawerLabels,
                                 dot = settings.notificationDots && app.app.packageName in dots,
-                                onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false,
+                                onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false, labelSize = settings.labelSize,
                             )
                         }
                     }
@@ -305,9 +306,9 @@ fun AppDrawer(
                 items(filtered, key = { it.key }, contentType = { "app" }) { app ->
                     Box(contentAlignment = Alignment.Center) {
                         AppIcon(
-                            app, settings.iconSize.dp, true,
+                            app, settings.iconSize.dp, settings.drawerLabels,
                             dot = settings.notificationDots && app.app.packageName in dots,
-                            onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false,
+                            onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false, labelSize = settings.labelSize,
                         )
                     }
                 }
@@ -322,7 +323,7 @@ fun AppDrawer(
                 }
             }
 
-            if (query.isBlank() && letters.size > 1) {
+            if (settings.drawerFastScroll && settings.drawerSort == DrawerSort.ALPHABETICAL && query.isBlank() && letters.size > 1) {
                 val offset = if (query.isBlank() && settings.showSuggestions && suggestions.isNotEmpty()) suggestions.size + 2 else 0
                 AlphabetScroller(
                     letters = letters,

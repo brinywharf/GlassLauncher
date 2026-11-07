@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 env:
-  VERSION: 0.4.0-alpha
+  VERSION: 0.5.0-alpha
 
 jobs:
   build:
@@ -36,6 +36,23 @@ jobs:
         run: |
           msg=$(grep -E "^e: |What went wrong|error:|Could not resolve|> " build.log | grep -v "^> Task" | head -60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
           echo "::error title=Build failed::${msg}"
+
+      # Private-repo friendly: put the APK (or the build log) on a "builds" branch,
+      # so it can be fetched with plain git.
+      - name: Publish to builds branch
+        if: always()
+        run: |
+          mkdir -p out
+          cp GlassLauncher-alpha.apk out/ 2>/dev/null || true
+          cp build.log out/ 2>/dev/null || true
+          echo "${{ job.status }}" > out/status.txt
+          cd out
+          git init -q -b builds
+          git config user.name "ci"
+          git config user.email "ci@users.noreply.github.com"
+          git add -A
+          git commit -qm "build ${{ github.run_number }} ${{ github.sha }}"
+          git push -qf "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}" builds
 
       - uses: actions/upload-artifact@v4
         with:

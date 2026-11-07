@@ -27,6 +27,7 @@ import com.example.glasslauncher.data.AppInfo
 import com.example.glasslauncher.data.IconBaker
 import com.example.glasslauncher.data.IconColorMode
 import com.example.glasslauncher.data.IconFactory
+import com.example.glasslauncher.data.IconShape
 import com.example.glasslauncher.data.LauncherSettings
 import com.example.glasslauncher.data.SettingsStore
 import com.example.glasslauncher.data.ShortcutItem
@@ -50,11 +51,12 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 
-private data class IconSpec(val glass: Boolean, val tint: Int?)
-private data class IconStyle(val glass: Boolean, val mode: IconColorMode, val color: Int)
+private data class IconSpec(val glass: Boolean, val tint: Int?, val shape: IconShape)
+private data class IconStyle(val glass: Boolean, val mode: IconColorMode, val color: Int, val shape: IconShape)
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class LauncherViewModel(app: Application) : AndroidViewModel(app) {
@@ -78,7 +80,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     /** Ready-to-draw apps (label + baked glass icon). */
     val apps: StateFlow<Map<String, UiApp>> = combine(
         rawApps,
-        settings.map { IconStyle(it.glassIcons, it.iconColorMode, it.iconColor) }.distinctUntilChanged(),
+        settings.map { IconStyle(it.glassIcons, it.iconColorMode, it.iconColor, it.iconShape) }.distinctUntilChanged(),
         userData.map { it.colors to it.renames }.distinctUntilChanged(),
     ) { raw, style, custom -> Triple(raw, style, custom) }
         .mapLatest { (raw, style, custom) -> buildUi(raw, style, custom.first, custom.second) }
@@ -130,6 +132,9 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             icon = original,
             glyph = IconFactory.glyph(drawable, original, info.label.toString()),
             autoColor = IconFactory.autoColor(original),
+            installTime = runCatching {
+                context.packageManager.getPackageInfo(info.componentName.packageName, 0).firstInstallTime
+            }.getOrDefault(0L),
         )
     }.getOrNull()
 
@@ -140,7 +145,13 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                 runCatching { launcherApps.getActivityList(pkg, user) }.getOrDefault(emptyList())
                     .mapNotNull { buildApp(it) }
             }
+            val before = rawApps.value.keys
             rawApps.update { map -> map.filterValues { it.packageName != pkg } + updated.associateBy { it.key } }
+            // Nova-style "add new apps to home screen"
+            val fresh = updated.map { it.key }.filter { it !in before }
+            if (fresh.isNotEmpty() && settings.value.addNewAppsToHome) {
+                dataStore.update { d -> d.copy(home = d.home + fresh.filter { it !in d.home && it !in d.dock }) }
+            }
         }
     }
 
@@ -161,12 +172,12 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
                     IconColorMode.SINGLE -> style.color
                     IconColorMode.CLEAR -> null
                 }
-                val spec = IconSpec(style.glass, tint)
+                val spec = IconSpec(style.glass, tint, style.shape)
                 val cached = iconCache[app.key]
                 val icon = if (cached != null && cached.first == spec && cached.second === app) {
                     cached.third
                 } else {
-                    val bmp: Bitmap = if (style.glass) IconBaker.bake(app.glyph, tint) else app.icon
+                    val bmp: Bitmap = if (style.glass) IconBaker.bake(app.glyph, tint, style.shape) else app.icon
                     bmp.asImageBitmap().also { iconCache[app.key] = Triple(spec, app, it) }
                 }
                 UiApp(app.key, app, renames[app.key] ?: app.label, icon)
@@ -176,7 +187,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Preview for the edit dialog. */
     suspend fun previewIcon(app: AppInfo, tint: Int?): ImageBitmap = withContext(Dispatchers.Default) {
-        IconBaker.bake(app.glyph, tint).asImageBitmap()
+        IconBaker.bake(app.glyph, tint, settings.value.iconShape).asImageBitmap()
     }
 
     /** First run: fill the dock and home screen with sensible apps. */
@@ -312,6 +323,42 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     fun removeWidget(id: Int) = dataStore.update { it.copy(widgets = it.widgets - id) }
 
     fun updateSettings(block: (LauncherSettings) -> LauncherSettings) = settingsStore.update(block)
+
+    // ---------------------------------------------------------------- Backup & restore
+
+    fun exportBackup(uri: Uri) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    val json = JSONObject()
+                        .put("app", "GlassLauncher")
+                        .put("version", 1)
+                        .put("settings", settingsStore.exportJson())
+                        .put("userdata", dataStore.exportJson())
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(json.toString(2).toByteArray()) }
+                    true
+                }.getOrDefault(false)
+            }
+            SystemActions.toast(context, if (ok) "✓ Backup saved" else "Backup failed")
+        }
+    }
+
+    fun importBackup(uri: Uri) {
+        viewModelScope.launch {
+            val json = withContext(Dispatchers.IO) {
+                runCatching {
+                    context.contentResolver.openInputStream(uri)?.use { JSONObject(it.readBytes().decodeToString()) }
+                }.getOrNull()
+            }
+            if (json == null || json.optString("app") != "GlassLauncher") {
+                SystemActions.toast(context, "Not a Glass Launcher backup")
+                return@launch
+            }
+            json.optJSONObject("settings")?.let { settingsStore.importJson(it) }
+            json.optJSONObject("userdata")?.let { dataStore.importJson(it) }
+            SystemActions.toast(context, "✓ Backup restored")
+        }
+    }
     fun resetSettings() = settingsStore.reset()
 
     // ---------------------------------------------------------------- Wallpaper
@@ -342,9 +389,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             val bitmap: Bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(wallpaperFile)) { decoder, info, _ ->
                 val scale = maxOf(1, minOf(info.size.width, info.size.height) / longSide)
                 decoder.setTargetSampleSize(scale)
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
             }
-            bitmap.prepareToDraw()
             bitmap.asImageBitmap()
         }.getOrNull()
     }

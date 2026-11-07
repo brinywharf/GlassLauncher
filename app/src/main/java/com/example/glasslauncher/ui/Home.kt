@@ -3,7 +3,6 @@ package com.example.glasslauncher.ui
 import android.graphics.Rect
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -52,6 +51,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -62,7 +64,10 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.glasslauncher.SystemActions
 import com.example.glasslauncher.WidgetController
+import com.example.glasslauncher.data.GestureAction
 import com.example.glasslauncher.data.LauncherSettings
+import com.example.glasslauncher.data.PageEffect
+import com.example.glasslauncher.data.SearchBarPos
 import com.example.glasslauncher.data.UiApp
 import com.kyant.backdrop.Backdrop
 import kotlinx.coroutines.delay
@@ -70,6 +75,7 @@ import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.abs
 import kotlin.math.max
 
 @Composable
@@ -84,6 +90,7 @@ fun HomeScreen(
     homeEvent: Int,
     onDrawerDrag: (Float) -> Unit,
     onDrawerSettle: (Float) -> Unit,
+    onGesture: (HomeGesture) -> Unit,
     onLaunch: (UiApp, Rect?) -> Unit,
     onAppLongPress: (UiApp) -> Unit,
     onOpenSearch: () -> Unit,
@@ -92,30 +99,32 @@ fun HomeScreen(
     onRemoveWidget: (Int) -> Unit,
 ) {
     val s = settings
-    val context = LocalContext.current
+    val prefs = LocalUiPrefs.current
     val perPage = max(1, s.homeColumns * s.homeRows)
     val appPages = max(1, (homeApps.size + perPage - 1) / perPage)
     val pageCount by rememberUpdatedState(appPages + 1) // page 0 = widgets
     val pagerState = rememberPagerState(initialPage = 1) { pageCount }
 
     LaunchedEffect(homeEvent) {
-        if (homeEvent > 0) pagerState.animateScrollToPage(1, animationSpec = spring(stiffness = 500f))
+        if (homeEvent > 0) pagerState.animateScrollToPage(1, animationSpec = fluidSpring(prefs, 1f, 500f))
     }
 
-    // One vertical gesture: up = drawer (follows the finger), down = notifications.
-    var mode by remember { mutableIntStateOf(0) } // 0 undecided, 1 drawer, 2 notifications
-    var notifDrag by remember { mutableFloatStateOf(0f) }
+    // One vertical gesture. Swipe up for the drawer follows the finger; other actions fire on release.
+    var mode by remember { mutableIntStateOf(0) } // 0 undecided, 1 up, 2 down
+    var total by remember { mutableFloatStateOf(0f) }
+    val followDrawer = s.swipeUp == GestureAction.APP_DRAWER
     val dragState = rememberDraggableState { delta ->
         if (mode == 0) mode = if (delta < 0f) 1 else 2
-        if (mode == 1) onDrawerDrag(delta) else notifDrag += delta
+        total += delta
+        if (mode == 1 && followDrawer) onDrawerDrag(delta)
     }
     val onDoubleTap: ((Offset) -> Unit)? =
-        if (s.doubleTapLock) ({ _: Offset -> SystemActions.lockScreen(context) }) else null
+        if (s.doubleTap != GestureAction.NONE) ({ _: Offset -> onGesture(HomeGesture.DOUBLE_TAP) }) else null
 
     Box(
         Modifier
             .fillMaxSize()
-            .pointerInput(s.doubleTapLock) {
+            .pointerInput(s.doubleTap) {
                 detectTapGestures(onDoubleTap = onDoubleTap, onLongPress = { onHomeLongPress() })
             }
             .draggable(
@@ -123,12 +132,13 @@ fun HomeScreen(
                 orientation = Orientation.Vertical,
                 onDragStarted = {
                     mode = 0
-                    notifDrag = 0f
+                    total = 0f
                 },
                 onDragStopped = { velocity ->
-                    if (mode == 1) onDrawerSettle(velocity)
-                    else if (mode == 2 && notifDrag > 90f && s.swipeDownNotifications) {
-                        SystemActions.expandNotifications(context)
+                    when {
+                        mode == 1 && followDrawer -> onDrawerSettle(velocity)
+                        mode == 1 && (total < -100f || velocity < -900f) -> onGesture(HomeGesture.SWIPE_UP)
+                        mode == 2 && (total > 90f || velocity > 900f) -> onGesture(HomeGesture.SWIPE_DOWN)
                     }
                     mode = 0
                 },
@@ -143,6 +153,7 @@ fun HomeScreen(
             if (s.showGlance) {
                 GlanceCard(backdrop, s.clock24h, Modifier.padding(horizontal = 20.dp, vertical = 12.dp))
             }
+            if (s.searchBarPos == SearchBarPos.TOP) SearchBar(backdrop, onOpenSearch)
 
             HorizontalPager(
                 state = pagerState,
@@ -151,20 +162,65 @@ fun HomeScreen(
                     .weight(1f)
                     .fillMaxWidth(),
             ) { page ->
-                if (page == 0) {
-                    WidgetPage(widgetIds, widgets, backdrop, onAddWidget, onRemoveWidget)
-                } else {
-                    val slice = homeApps.drop((page - 1) * perPage).take(perPage)
-                    AppGridPage(slice, s, dots, onLaunch, onAppLongPress)
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { applyPageEffect(s.pageEffect, pagerState.getOffsetDistanceInPages(page)) }
+                ) {
+                    if (page == 0) {
+                        WidgetPage(widgetIds, widgets, backdrop, onAddWidget, onRemoveWidget)
+                    } else {
+                        val slice = homeApps.drop((page - 1) * perPage).take(perPage)
+                        AppGridPage(slice, s, dots, onLaunch, onAppLongPress)
+                    }
                 }
             }
 
-            PageDots(pagerState.pageCount, pagerState.currentPage)
+            if (s.showPageDots) PageDots(pagerState.pageCount, pagerState.currentPage)
             Spacer(Modifier.height(10.dp))
 
-            Dock(dockApps, s, dots, backdrop, onLaunch, onAppLongPress)
+            if (s.showDock) Dock(dockApps, s, dots, backdrop, onLaunch, onAppLongPress)
 
-            if (s.showSearchBar) SearchBar(backdrop, onOpenSearch) else Spacer(Modifier.height(12.dp))
+            if (s.searchBarPos == SearchBarPos.BOTTOM) SearchBar(backdrop, onOpenSearch) else Spacer(Modifier.height(12.dp))
+        }
+    }
+}
+
+enum class HomeGesture { SWIPE_UP, SWIPE_DOWN, DOUBLE_TAP }
+
+/**
+ * Nova-style page transitions. d = offset of this page from the centre in pages
+ * (positive = page sits to the right). Everything runs in the draw phase.
+ */
+private fun GraphicsLayerScope.applyPageEffect(effect: PageEffect, d: Float) {
+    val p = d.coerceIn(-1f, 1f)
+    val a = abs(p)
+    when (effect) {
+        PageEffect.SLIDE -> Unit
+        PageEffect.CUBE -> {
+            cameraDistance = 14f * density
+            transformOrigin = TransformOrigin(if (p < 0f) 1f else 0f, 0.5f)
+            rotationY = 75f * p
+        }
+        PageEffect.STACK -> if (p > 0f) {
+            // the incoming page waits underneath and grows into place
+            translationX = -p * size.width
+            val sc = 1f - 0.12f * a
+            scaleX = sc; scaleY = sc
+            alpha = 1f - a
+        }
+        PageEffect.ZOOM -> {
+            val sc = 1f - 0.18f * a
+            scaleX = sc; scaleY = sc
+            alpha = 1f - 0.6f * a
+        }
+        PageEffect.ROTATE -> {
+            transformOrigin = TransformOrigin(0.5f, 1.15f)
+            rotationZ = 12f * p
+        }
+        PageEffect.FADE -> {
+            translationX = -p * size.width
+            alpha = 1f - a
         }
     }
 }
@@ -197,6 +253,7 @@ private fun AppGridPage(
                                 app, s.iconSize.dp, s.showLabels,
                                 dot = s.notificationDots && app.app.packageName in dots,
                                 onClick = onLaunch, onLongClick = onLongPress,
+                                labelSize = s.labelSize,
                             )
                         }
                     }
@@ -255,7 +312,7 @@ private fun PageDots(count: Int, current: Int) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
         repeat(count) { i ->
             val selected = i == current
-            val w by animateDpAsState(if (selected) 18.dp else 6.dp, spring(dampingRatio = 0.7f, stiffness = 900f), label = "dot")
+            val w by animateDpAsState(if (selected) 18.dp else 6.dp, fluidSpring(LocalUiPrefs.current, 0.7f, 900f), label = "dot")
             val col by animateColorAsState(Color.White.copy(alpha = if (selected) 0.95f else 0.4f), label = "dotc")
             Box(
                 Modifier
@@ -280,7 +337,10 @@ private fun Dock(
         Modifier
             .padding(horizontal = 16.dp)
             .fillMaxWidth()
-            .liquidGlass(backdrop, RoundedCornerShape(36.dp), blurRadius = 5.dp, refractionHeight = 24.dp, refractionAmount = 56.dp)
+            .then(
+                if (s.dockBackground) Modifier.liquidGlass(backdrop, RoundedCornerShape(36.dp), blurRadius = 5.dp, refractionHeight = 24.dp, refractionAmount = 56.dp)
+                else Modifier
+            )
             .padding(vertical = 14.dp, horizontal = 6.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,

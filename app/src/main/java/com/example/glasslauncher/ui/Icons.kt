@@ -2,7 +2,6 @@ package com.example.glasslauncher.ui
 
 import android.graphics.Rect
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -62,12 +61,14 @@ fun AppIcon(
     onClick: (UiApp, Rect?) -> Unit,
     onLongClick: (UiApp) -> Unit,
     labelShadow: Boolean = true,
+    labelSize: Int = 12,
 ) {
+    val prefs = LocalUiPrefs.current
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (pressed) 0.86f else 1f,
-        animationSpec = spring(dampingRatio = 0.5f, stiffness = 1400f),
+        animationSpec = fluidSpring(prefs, dampingRatio = 0.5f, stiffness = 1400f),
         label = "press",
     )
     val haptic = LocalHapticFeedback.current
@@ -81,7 +82,7 @@ fun AppIcon(
                 indication = null,
                 onClick = { onClick(ui, holder.rect()) },
                 onLongClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (prefs.haptics) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onLongClick(ui)
                 },
             ),
@@ -117,7 +118,7 @@ fun AppIcon(
             Spacer(Modifier.height(5.dp))
             Text(
                 ui.label,
-                style = (if (labelShadow) LabelStyle else PlainStyle).copy(fontSize = 12.sp),
+                style = (if (labelShadow) LabelStyle else PlainStyle).copy(fontSize = labelSize.sp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,
