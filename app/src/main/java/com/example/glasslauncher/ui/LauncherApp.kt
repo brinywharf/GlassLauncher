@@ -79,7 +79,6 @@ fun LauncherApp(
     var heightPx by remember { mutableFloatStateOf(2400f) }
     val drawerSpring = remember { spring<Float>(dampingRatio = 0.86f, stiffness = 420f) }
     val drawerShown by remember { derivedStateOf { drawer.value > 0.001f } }
-    val drawerOpen by remember { derivedStateOf { drawer.targetValue > 0.5f } }
     var drawerWarm by remember { mutableStateOf(false) }
     var drawerFocusSearch by remember { mutableStateOf(false) }
 
@@ -261,7 +260,7 @@ fun LauncherApp(
                             apps = drawerApps,
                             suggestions = suggestions,
                             dots = dots,
-                            open = drawerOpen,
+                            open = drawerShown,
                             focusSearch = drawerFocusSearch,
                             progress = { drawer.value },
                             onDrag = ::dragDrawer,
