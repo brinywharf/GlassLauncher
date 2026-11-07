@@ -133,9 +133,11 @@ fun AppDrawer(
     val gridState = rememberLazyGridState()
 
     // Reset when closed; focus the search box when opened from the search bar.
-    LaunchedEffect(open, focusSearch) {
+    // Never reset while an icon from here is being dragged (it would vanish mid-drag).
+    val dragActive = LocalDrag.current?.item != null
+    LaunchedEffect(open, focusSearch, dragActive) {
         if (open && focusSearch) runCatching { focus.requestFocus() }
-        if (!open) {
+        if (!open && !dragActive) {
             keyboard?.hide()
             query = ""
             gridState.scrollToItem(0)
