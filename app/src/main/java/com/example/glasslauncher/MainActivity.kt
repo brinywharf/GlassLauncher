@@ -14,14 +14,26 @@ class MainActivity : ComponentActivity() {
 
     /** Fires when the user presses Home while the launcher is already in front. */
     private val homePressed = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private lateinit var widgets: WidgetController
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        widgets = WidgetController(this)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
         )
-        setContent { LauncherApp(homePressed = homePressed) }
+        setContent { LauncherApp(homePressed = homePressed, widgets = widgets) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        runCatching { widgets.host.startListening() }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        runCatching { widgets.host.stopListening() }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -29,7 +41,9 @@ class MainActivity : ComponentActivity() {
         homePressed.tryEmit(Unit)
     }
 
-    // A launcher should never close on Back.
     @Deprecated("Deprecated in Java")
-    override fun onBackPressed() = Unit
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        widgets.onActivityResult(requestCode, resultCode)
+    }
 }

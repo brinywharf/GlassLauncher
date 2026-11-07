@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Glass Launcher Alpha</string>
+    <string name="lock_service_label">Glass Launcher – çift dokunarak kilitle</string>
+    <string name="lock_service_desc">Ana ekrana çift dokunduğunda Glass Launcher\'ın ekranı kilitlemesini sağlar. Ekranındaki hiçbir şeyi okumaz.</string>
+</resources>

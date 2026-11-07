@@ -1,3 +1,5 @@
 <resources>
-    <string name="app_name">Glass Launcher</string>
+    <string name="app_name">Glass Launcher Alpha</string>
+    <string name="lock_service_label">Glass Launcher – double-tap to lock</string>
+    <string name="lock_service_desc">Lets Glass Launcher lock the screen when you double-tap the home screen. It does not read anything on your screen.</string>
 </resources>

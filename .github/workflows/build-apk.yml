@@ -7,6 +7,9 @@ on:
 permissions:
   contents: write
 
+env:
+  VERSION: 0.2.0-alpha
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,23 +23,36 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APK
+      - name: Build APK
         run: |
+          set -o pipefail
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
-          cp app/build/outputs/apk/debug/app-debug.apk GlassLauncher.apk
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
+          cp app/build/outputs/apk/debug/app-debug.apk GlassLauncher-alpha.apk
+
+      # Turn compiler errors into a visible annotation on the run page
+      - name: Report build errors
+        if: failure()
+        run: |
+          msg=$(grep -E "^e: |What went wrong|error:|Could not resolve|> " build.log | grep -v "^> Task" | head -60 | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Build failed::${msg}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: GlassLauncher-apk
-          path: GlassLauncher.apk
+          name: GlassLauncher-alpha
+          path: GlassLauncher-alpha.apk
 
-      # Publishes the APK so it can be downloaded with a direct link:
-      # https://github.com/<owner>/<repo>/releases/latest/download/GlassLauncher.apk
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: build-${{ github.run_number }}
-          name: Glass Launcher build ${{ github.run_number }}
-          files: GlassLauncher.apk
+          tag_name: v${{ env.VERSION }}-build${{ github.run_number }}
+          name: Glass Launcher ${{ env.VERSION }} (build ${{ github.run_number }}) · ALPHA
+          files: GlassLauncher-alpha.apk
           make_latest: true
+          body: |
+            ⚠️ **ALPHA**: Glass Launcher is still in development. Expect bugs, missing features and changes between builds.
+
+            **Install:** download `GlassLauncher-alpha.apk` on your Android 13+ device, open it, and allow installing from that app if asked.
+            Then press Home and pick **Glass Launcher Alpha**.
+
+            Built from commit ${{ github.sha }}.
