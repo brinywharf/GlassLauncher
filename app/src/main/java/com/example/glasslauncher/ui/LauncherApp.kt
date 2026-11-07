@@ -8,6 +8,12 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.ExperimentalAnimationApi
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.slideInVertically
@@ -33,12 +39,16 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
@@ -51,10 +61,13 @@ import com.example.glasslauncher.data.UiApp
 import com.example.glasslauncher.services.NotificationDots
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
+@OptIn(ExperimentalAnimationApi::class)
 @Composable
 fun LauncherApp(
     homePressed: Flow<Unit>,
@@ -77,10 +90,15 @@ fun LauncherApp(
     // ------------------------------------------------ Drawer physics (0 = closed, 1 = open)
     val drawer = remember { Animatable(0f) }
     var heightPx by remember { mutableFloatStateOf(2400f) }
-    val drawerSpring = remember { spring<Float>(dampingRatio = 0.86f, stiffness = 420f) }
+    val drawerSpring = remember { spring<Float>(dampingRatio = 0.9f, stiffness = 520f) }
     val drawerShown by remember { derivedStateOf { drawer.value > 0.001f } }
     var drawerWarm by remember { mutableStateOf(false) }
     var drawerFocusSearch by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        delay(1200)
+        drawerWarm = true
+    }
 
     fun dragDrawer(dy: Float) {
         drawerWarm = true
@@ -202,8 +220,21 @@ fun LauncherApp(
             ) {
                 val h = constraints.maxHeight.toFloat()
                 SideEffect { if (h > 0f) heightPx = h }
+                val wPx = constraints.maxWidth
+                val hPx = constraints.maxHeight
 
-                LauncherBackground(wallpaper, Modifier.fillMaxSize().layerBackdrop(backdrop))
+                val aurora by produceState<ImageBitmap?>(null, wPx / 3, hPx / 3) {
+                    value = withContext(Dispatchers.Default) { Frost.aurora(wPx / 3, hPx / 3).asImageBitmap() }
+                }
+                val bg = wallpaper ?: aurora
+                val frost by produceState<ImageBitmap?>(null, bg, wPx, hPx) {
+                    val b = bg
+                    value = if (b == null) null else withContext(Dispatchers.Default) {
+                        runCatching { Frost.make(b.asAndroidBitmap(), wPx, hPx).asImageBitmap() }.getOrNull()
+                    }
+                }
+
+                LauncherBackground(bg, Modifier.fillMaxSize().layerBackdrop(backdrop))
 
                 // Home fades and sinks back a little as the drawer comes up (draw-phase only: no recomposition)
                 Box(
@@ -248,15 +279,12 @@ fun LauncherApp(
                     Box(
                         Modifier
                             .fillMaxSize()
-                            .graphicsLayer {
-                                val p = drawer.value.coerceIn(0f, 1f)
-                                translationY = (1f - p) * size.height
-                                alpha = if (p < 0.001f) 0f else 1f
-                            }
+                            .graphicsLayer { alpha = if (drawer.value < 0.001f) 0f else 1f }
                     ) {
                         AppDrawer(
                             settings = settings,
                             backdrop = backdrop,
+                            frost = frost,
                             apps = drawerApps,
                             suggestions = suggestions,
                             dots = dots,
@@ -274,10 +302,20 @@ fun LauncherApp(
 
                 AnimatedVisibility(
                     visible = settingsOpen,
-                    enter = slideInVertically(spring(dampingRatio = 0.86f, stiffness = 480f)) { it },
-                    exit = slideOutVertically(spring(dampingRatio = 1f, stiffness = 650f)) { it },
+                    enter = EnterTransition.None,
+                    exit = ExitTransition.None,
                 ) {
+                    Box(
+                        Modifier
+                            .fillMaxSize()
+                            .animateEnterExit(enter = fadeIn(tween(220)), exit = fadeOut(tween(200)))
+                            .frosted(frost, dim = 0.40f)
+                    )
                     SettingsScreen(
+                        modifier = Modifier.animateEnterExit(
+                            enter = slideInVertically(spring(dampingRatio = 0.86f, stiffness = 480f)) { it },
+                            exit = slideOutVertically(spring(dampingRatio = 1f, stiffness = 650f)) { it },
+                        ),
                         settings = settings,
                         backdrop = backdrop,
                         hiddenApps = hiddenApps,

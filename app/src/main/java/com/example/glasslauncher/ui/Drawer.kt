@@ -54,7 +54,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -87,6 +90,7 @@ private fun letterOf(label: String): String {
 fun AppDrawer(
     settings: LauncherSettings,
     backdrop: Backdrop,
+    frost: ImageBitmap?,
     apps: List<UiApp>,
     suggestions: List<UiApp>,
     dots: Set<String>,
@@ -165,19 +169,22 @@ fun AppDrawer(
         onLaunch(app, rect)
     }
 
+    Box(Modifier.fillMaxSize()) {
+    // Frosted background: static, blurred once, just fades in. Costs nothing per frame.
+    Box(
+        Modifier
+            .fillMaxSize()
+            .graphicsLayer { alpha = currentProgress().coerceIn(0f, 1f) }
+            .frosted(frost, dim = 0.30f)
+    )
+    // Content follows the finger 1:1
     Column(
         Modifier
             .fillMaxSize()
+            .graphicsLayer { translationY = (1f - currentProgress().coerceIn(0f, 1f)) * size.height }
             .statusBarsPadding()
             .padding(top = 8.dp)
-            .liquidGlass(
-                backdrop,
-                RoundedCornerShape(topStart = 42.dp, topEnd = 42.dp),
-                tint = Color.Black.copy(alpha = 0.32f),
-                blurRadius = 16.dp,
-                refractionHeight = 30.dp,
-                refractionAmount = 64.dp,
-            )
+            .sheetPanel()
             .nestedScroll(connection)
             .navigationBarsPadding()
             .imePadding(),
@@ -202,7 +209,7 @@ fun AppDrawer(
                     Modifier
                         .weight(1f)
                         .height(50.dp)
-                        .liquidGlass(backdrop, RoundedCornerShape(50), refractionHeight = 12.dp, refractionAmount = 26.dp)
+                        .frostedControl(RoundedCornerShape(50))
                         .padding(horizontal = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -212,14 +219,14 @@ fun AppDrawer(
                         if (query.isEmpty()) {
                             Text(
                                 t("Search apps", "Uygulama ara"),
-                                style = LabelStyle.copy(fontSize = 16.sp, color = Color.White.copy(alpha = 0.6f)),
+                                style = PlainStyle.copy(fontSize = 16.sp, color = Color.White.copy(alpha = 0.6f)),
                             )
                         }
                         BasicTextField(
                             value = query,
                             onValueChange = { query = it },
                             singleLine = true,
-                            textStyle = LabelStyle.copy(fontSize = 16.sp),
+                            textStyle = PlainStyle.copy(fontSize = 16.sp),
                             cursorBrush = SolidColor(Color.White),
                             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                             keyboardActions = KeyboardActions(onSearch = {
@@ -245,7 +252,8 @@ fun AppDrawer(
                 Box(
                     Modifier
                         .size(50.dp)
-                        .liquidGlass(backdrop, CircleShape, refractionHeight = 12.dp, refractionAmount = 26.dp)
+                        .frostedControl(CircleShape)
+                        .clip(CircleShape)
                         .clickable {
                             keyboard?.hide()
                             onOpenSettings()
@@ -271,7 +279,7 @@ fun AppDrawer(
                     item(span = { GridItemSpan(maxLineSpan) }, key = "sugg-title", contentType = "title") {
                         Text(
                             t("Suggested", "Önerilen"),
-                            style = LabelStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = 0.8f)),
+                            style = PlainStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White.copy(alpha = 0.8f)),
                             modifier = Modifier.padding(start = 16.dp),
                         )
                     }
@@ -280,7 +288,7 @@ fun AppDrawer(
                             AppIcon(
                                 app, settings.iconSize.dp, true,
                                 dot = settings.notificationDots && app.app.packageName in dots,
-                                onClick = ::launchApp, onLongClick = onLongPress,
+                                onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false,
                             )
                         }
                     }
@@ -299,14 +307,14 @@ fun AppDrawer(
                         AppIcon(
                             app, settings.iconSize.dp, true,
                             dot = settings.notificationDots && app.app.packageName in dots,
-                            onClick = ::launchApp, onLongClick = onLongPress,
+                            onClick = ::launchApp, onLongClick = onLongPress, labelShadow = false,
                         )
                     }
                 }
                 if (query.isNotBlank()) {
                     item(span = { GridItemSpan(maxLineSpan) }, key = "web", contentType = "web") {
                         Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
-                            GlassChip(t("Search the web for “$query”", "Web'de ara: “$query”"), Icons.Default.Search, backdrop) {
+                            GlassChip(t("Search the web for “$query”", "Web'de ara: “$query”"), Icons.Default.Search, backdrop, live = false) {
                                 SystemActions.webSearch(context, query)
                             }
                         }
@@ -328,6 +336,7 @@ fun AppDrawer(
                 )
             }
         }
+    }
     }
 }
 
@@ -372,7 +381,7 @@ private fun AlphabetScroller(letters: List<String>, onLetter: (String) -> Unit, 
             letters.forEach {
                 Text(
                     it,
-                    style = LabelStyle.copy(
+                    style = PlainStyle.copy(
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold,
                         color = if (it == active) Color.White else Color.White.copy(alpha = 0.6f),
@@ -390,7 +399,7 @@ private fun AlphabetScroller(letters: List<String>, onLetter: (String) -> Unit, 
                     .background(Color.White.copy(alpha = 0.28f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(current, style = LabelStyle.copy(fontSize = 28.sp, fontWeight = FontWeight.Bold))
+                Text(current, style = PlainStyle.copy(fontSize = 28.sp, fontWeight = FontWeight.Bold))
             }
         }
     }

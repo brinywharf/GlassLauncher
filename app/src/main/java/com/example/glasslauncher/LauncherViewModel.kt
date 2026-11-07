@@ -128,7 +128,7 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             packageName = info.componentName.packageName,
             activityName = info.componentName.className,
             icon = original,
-            glyph = IconFactory.glyph(drawable),
+            glyph = IconFactory.glyph(drawable, original, info.label.toString()),
             autoColor = IconFactory.autoColor(original),
         )
     }.getOrNull()

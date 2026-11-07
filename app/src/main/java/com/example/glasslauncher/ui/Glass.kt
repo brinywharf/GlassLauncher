@@ -16,6 +16,7 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -49,10 +50,14 @@ data class GlassConfig(
 
 val LocalGlass = compositionLocalOf { GlassConfig() }
 
+/** Text over the wallpaper: a small shadow keeps it readable. */
 val LabelStyle = TextStyle(
     color = Color.White,
-    shadow = Shadow(Color.Black.copy(alpha = 0.55f), offset = Offset(0f, 1f), blurRadius = 6f),
+    shadow = Shadow(Color.Black.copy(alpha = 0.5f), offset = Offset(0f, 1f), blurRadius = 3f),
 )
+
+/** Text on frosted sheets: no shadow needed (cheaper to draw). */
+val PlainStyle = TextStyle(color = Color.White)
 
 /**
  * The liquid glass material used everywhere.
@@ -119,13 +124,18 @@ fun Modifier.liquidGlass(
     )
 }
 
-/** Small glass pill button with optional icon. */
+/** Small glass pill button. live = real refraction (over wallpaper); otherwise a cheap frosted look (on sheets). */
 @Composable
-fun GlassChip(text: String, icon: ImageVector?, backdrop: Backdrop, onClick: () -> Unit) {
+fun GlassChip(text: String, icon: ImageVector?, backdrop: Backdrop, live: Boolean = true, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(50)
     Row(
         Modifier
             .height(40.dp)
-            .liquidGlass(backdrop, RoundedCornerShape(50), refractionHeight = 10.dp, refractionAmount = 20.dp)
+            .then(
+                if (live) Modifier.liquidGlass(backdrop, shape, refractionHeight = 10.dp, refractionAmount = 20.dp)
+                else Modifier.frostedControl(shape)
+            )
+            .clip(shape)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -134,6 +144,6 @@ fun GlassChip(text: String, icon: ImageVector?, backdrop: Backdrop, onClick: () 
             Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
             Spacer(Modifier.width(6.dp))
         }
-        Text(text, style = LabelStyle.copy(fontSize = 14.sp))
+        Text(text, style = (if (live) LabelStyle else PlainStyle).copy(fontSize = 14.sp))
     }
 }

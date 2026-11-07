@@ -61,6 +61,7 @@ fun AppIcon(
     dot: Boolean,
     onClick: (UiApp, Rect?) -> Unit,
     onLongClick: (UiApp) -> Unit,
+    labelShadow: Boolean = true,
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
@@ -116,7 +117,7 @@ fun AppIcon(
             Spacer(Modifier.height(5.dp))
             Text(
                 ui.label,
-                style = LabelStyle.copy(fontSize = 12.sp),
+                style = (if (labelShadow) LabelStyle else PlainStyle).copy(fontSize = 12.sp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 textAlign = TextAlign.Center,

@@ -342,7 +342,7 @@ private fun WidgetPage(
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            GlassChip(t("Add widget", "Widget ekle"), Icons.Default.Add, backdrop, onAdd)
+            GlassChip(t("Add widget", "Widget ekle"), Icons.Default.Add, backdrop, onClick = onAdd)
             if (ids.isNotEmpty()) {
                 GlassChip(if (editing) t("Done", "Bitti") else t("Edit", "Düzenle"), Icons.Default.Edit, backdrop) {
                     editing = !editing

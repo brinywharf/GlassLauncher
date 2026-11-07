@@ -16,6 +16,7 @@ import android.graphics.RadialGradient
 import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Shader
+import android.graphics.Typeface
 import android.graphics.drawable.AdaptiveIconDrawable
 import android.graphics.drawable.Drawable
 import androidx.compose.runtime.Immutable
@@ -59,7 +60,7 @@ object IconFactory {
 
     fun original(drawable: Drawable): Bitmap = drawable.toBitmap(PX, PX, Bitmap.Config.ARGB_8888)
 
-    /** Turns any colored art into light, slightly see-through shades (keeps the details). */
+    /** Turns colored logo art into light, slightly see-through shades (keeps the details). */
     private val lightFilter = ColorMatrixColorFilter(
         ColorMatrix(
             floatArrayOf(
@@ -71,42 +72,135 @@ object IconFactory {
         )
     )
 
-    fun glyph(drawable: Drawable): Bitmap {
-        val px = PX
-        val bitmap = Bitmap.createBitmap(px, px, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-
+    /**
+     * Builds the symbol that sits inside the glass tile. Tries, in order:
+     *  1. the Android 13 themed-icon layer (if it's a real symbol, not a filled square)
+     *  2. the foreground logo (if it sits on a transparent background)
+     *  3. a light "engraving" made from the artwork's light/dark areas (photo-style icons)
+     *  4. the app's first letter
+     */
+    fun glyph(drawable: Drawable, original: Bitmap, label: String): Bitmap {
         if (drawable is AdaptiveIconDrawable) {
-            // Android 13 themed-icon layer: a clean single-color symbol. Best case.
-            val mono = drawable.monochrome?.constantState?.newDrawable()?.mutate()
-            if (mono != null) {
+            drawable.monochrome?.constantState?.newDrawable()?.mutate()?.let { mono ->
                 mono.colorFilter = PorterDuffColorFilter(Color.WHITE, PorterDuff.Mode.SRC_IN)
-                drawLayer(mono, canvas, px)
-                return bitmap
+                val bmp = renderLayer(mono)
+                if (coverage(bmp) in 0.015f..0.5f) return bmp
             }
-            // No themed icon: take the foreground art and turn it light so it matches the rest.
-            val fg = drawable.foreground?.constantState?.newDrawable()?.mutate()
-            if (fg != null) {
+            drawable.foreground?.constantState?.newDrawable()?.mutate()?.let { fg ->
                 fg.colorFilter = lightFilter
-                drawLayer(fg, canvas, px)
-                return bitmap
+                val bmp = renderLayer(fg)
+                if (coverage(bmp) in 0.015f..0.42f) return bmp
             }
+            return fromArtwork(original) ?: letter(label)
         }
 
-        // Old-style icon: shrink it and make it light too.
-        val copy = drawable.constantState?.newDrawable()?.mutate() ?: drawable.mutate()
-        copy.colorFilter = lightFilter
-        val inset = (px * 0.2f).toInt()
-        copy.setBounds(inset, inset, px - inset, px - inset)
-        copy.draw(canvas)
-        return bitmap
+        // Old-style icon
+        val cov = coverage(original)
+        if (cov in 0.015f..0.42f) {
+            val bmp = Bitmap.createBitmap(PX, PX, Bitmap.Config.ARGB_8888)
+            val inset = PX * 0.18f
+            Canvas(bmp).drawBitmap(
+                original, null, RectF(inset, inset, PX - inset, PX - inset),
+                Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply { colorFilter = lightFilter },
+            )
+            return bmp
+        }
+        return fromArtwork(original) ?: letter(label)
     }
 
     /** Adaptive layers are 108 units with the art in the middle; scale so the art fills ~60%. */
-    private fun drawLayer(layer: Drawable, canvas: Canvas, px: Int) {
-        val pad = px / 6
-        layer.setBounds(-pad, -pad, px + pad, px + pad)
-        layer.draw(canvas)
+    private fun renderLayer(layer: Drawable): Bitmap {
+        val bmp = Bitmap.createBitmap(PX, PX, Bitmap.Config.ARGB_8888)
+        val pad = PX / 6
+        layer.setBounds(-pad, -pad, PX + pad, PX + pad)
+        layer.draw(Canvas(bmp))
+        return bmp
+    }
+
+    /** Share of pixels that are clearly visible. A filled square is ~1.0, a logo ~0.1–0.4. */
+    private fun coverage(bmp: Bitmap): Float {
+        val px = IntArray(bmp.width * bmp.height)
+        bmp.getPixels(px, 0, bmp.width, 0, 0, bmp.width, bmp.height)
+        var n = 0
+        for (p in px) if ((p ushr 24) > 100) n++
+        return n.toFloat() / px.size
+    }
+
+    /**
+     * For full-picture icons: map brightness to opacity, so the picture becomes
+     * white highlights "engraved" in the glass. Light icons are inverted (dark parts show).
+     */
+    private fun fromArtwork(art: Bitmap): Bitmap? {
+        val w = art.width
+        val h = art.height
+        val px = IntArray(w * h)
+        art.getPixels(px, 0, w, 0, 0, w, h)
+
+        val hist = IntArray(256)
+        var count = 0
+        var sum = 0L
+        for (p in px) {
+            if ((p ushr 24) < 128) continue
+            val l = lum(p)
+            hist[l]++
+            sum += l
+            count++
+        }
+        if (count < 64) return null
+        val lo = percentile(hist, count, 0.08f)
+        val hi = percentile(hist, count, 0.92f)
+        if (hi - lo < 28) return null
+        val invert = sum / count > 150
+
+        val out = IntArray(w * h)
+        val range = (hi - lo).toFloat()
+        for (i in px.indices) {
+            val p = px[i]
+            val a = p ushr 24
+            if (a == 0) continue
+            var t = ((lum(p) - lo) / range).coerceIn(0f, 1f)
+            if (invert) t = 1f - t
+            t = t * t * (3f - 2f * t)
+            val alpha = (a * t * 0.95f).toInt().coerceIn(0, 255)
+            out[i] = (alpha shl 24) or 0x00FFFFFF
+        }
+        val full = Bitmap.createBitmap(out, w, h, Bitmap.Config.ARGB_8888)
+        // Shrink into the middle of the tile
+        val bmp = Bitmap.createBitmap(PX, PX, Bitmap.Config.ARGB_8888)
+        val inset = PX * 0.14f
+        Canvas(bmp).drawBitmap(
+            full, null, RectF(inset, inset, PX - inset, PX - inset),
+            Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG),
+        )
+        return bmp
+    }
+
+    private fun lum(p: Int): Int =
+        (((p shr 16) and 0xff) * 77 + ((p shr 8) and 0xff) * 150 + (p and 0xff) * 29) shr 8
+
+    private fun percentile(hist: IntArray, count: Int, q: Float): Int {
+        val target = (count * q).toInt()
+        var acc = 0
+        for (i in 0..255) {
+            acc += hist[i]
+            if (acc >= target) return i
+        }
+        return 255
+    }
+
+    /** Last resort: the app's first letter. */
+    private fun letter(label: String): Bitmap {
+        val bmp = Bitmap.createBitmap(PX, PX, Bitmap.Config.ARGB_8888)
+        val ch = label.trim().firstOrNull { it.isLetterOrDigit() }?.uppercaseChar()?.toString() ?: "•"
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = PX * 0.44f
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+        }
+        val y = PX / 2f - (paint.descent() + paint.ascent()) / 2f
+        Canvas(bmp).drawText(ch, PX / 2f, y, paint)
+        return bmp
     }
 
     fun autoColor(bitmap: Bitmap): Int {
@@ -184,7 +278,10 @@ object IconBaker {
         val gp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
             setShadowLayer(out * 0.025f, 0f, out * 0.012f, Color.argb(90, 0, 0, 0))
         }
+        c.save()
+        c.clipPath(path)
         c.drawBitmap(glyph, null, Rect(0, 0, out, out), gp)
+        c.restore()
 
         // 7) Specular rim: bright top-left and bottom-right edges
         val stroke = out * 0.013f

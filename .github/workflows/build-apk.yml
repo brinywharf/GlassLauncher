@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 env:
-  VERSION: 0.3.0-alpha
+  VERSION: 0.4.0-alpha
 
 jobs:
   build:
@@ -27,8 +27,8 @@ jobs:
         run: |
           set -o pipefail
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace 2>&1 | tee build.log
-          cp app/build/outputs/apk/debug/app-debug.apk GlassLauncher-alpha.apk
+          ./gradlew assembleRelease --stacktrace 2>&1 | tee build.log
+          cp app/build/outputs/apk/release/app-release.apk GlassLauncher-alpha.apk
 
       # Turn compiler errors into a visible annotation on the run page
       - name: Report build errors

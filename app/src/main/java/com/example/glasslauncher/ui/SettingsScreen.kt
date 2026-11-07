@@ -59,6 +59,7 @@ fun SettingsScreen(
     onPickWallpaper: () -> Unit,
     onClearWallpaper: () -> Unit,
     onClose: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
     val version = remember {
@@ -66,15 +67,11 @@ fun SettingsScreen(
     }
 
     Column(
-        Modifier
+        modifier
             .fillMaxSize()
             .statusBarsPadding()
             .padding(top = 8.dp)
-            .liquidGlass(
-                backdrop, RoundedCornerShape(topStart = 42.dp, topEnd = 42.dp),
-                tint = Color.Black.copy(alpha = 0.40f),
-                blurRadius = 22.dp, refractionHeight = 30.dp, refractionAmount = 70.dp,
-            )
+            .sheetPanel()
             .navigationBarsPadding(),
     ) {
         // Header
@@ -82,14 +79,15 @@ fun SettingsScreen(
             Modifier.padding(start = 24.dp, end = 16.dp, top = 20.dp, bottom = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(t("Settings", "Ayarlar"), style = LabelStyle.copy(fontSize = 26.sp, fontWeight = FontWeight.Bold))
+            Text(t("Settings", "Ayarlar"), style = PlainStyle.copy(fontSize = 26.sp, fontWeight = FontWeight.Bold))
             Spacer(Modifier.width(10.dp))
             AlphaBadge()
             Spacer(Modifier.weight(1f))
             Box(
                 Modifier
                     .size(44.dp)
-                    .liquidGlass(backdrop, CircleShape, refractionHeight = 10.dp, refractionAmount = 22.dp)
+                    .frostedControl(CircleShape)
+                    .clip(CircleShape)
                     .clickable(onClick = onClose),
                 contentAlignment = Alignment.Center,
             ) { Icon(Icons.Default.Close, t("Close", "Kapat"), tint = Color.White) }
@@ -135,7 +133,7 @@ fun SettingsScreen(
             if (settings.glassIcons) {
                 Text(
                     t("Icon color", "İkon rengi"),
-                    style = LabelStyle.copy(fontSize = 15.sp),
+                    style = PlainStyle.copy(fontSize = 15.sp),
                     modifier = Modifier.padding(top = 10.dp, bottom = 8.dp),
                 )
                 Segmented(
@@ -155,11 +153,11 @@ fun SettingsScreen(
                 Text(
                     t("Tip: long-press any app → Edit to give it its own color.",
                         "İpucu: bir uygulamaya uzun bas → Düzenle ile ona özel renk ver."),
-                    style = LabelStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f)),
+                    style = PlainStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f)),
                     modifier = Modifier.padding(top = 10.dp),
                 )
                 Spacer(Modifier.height(8.dp))
-                GlassChip(t("Reset all custom colors", "Tüm özel renkleri sıfırla"), null, backdrop, onResetColors)
+                GlassChip(t("Reset all custom colors", "Tüm özel renkleri sıfırla"), null, backdrop, live = false, onClick = onResetColors)
             }
             SettingSlider(
                 t("Icon size", "İkon boyutu"),
@@ -198,8 +196,8 @@ fun SettingsScreen(
                 onUpdate { it.copy(dockCount = v) }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.padding(top = 10.dp)) {
-                GlassChip(t("Change wallpaper", "Duvar kâğıdını değiştir"), null, backdrop, onPickWallpaper)
-                if (hasWallpaper) GlassChip(t("Default background", "Varsayılan arka plan"), null, backdrop, onClearWallpaper)
+                GlassChip(t("Change wallpaper", "Duvar kâğıdını değiştir"), null, backdrop, live = false, onClick = onPickWallpaper)
+                if (hasWallpaper) GlassChip(t("Default background", "Varsayılan arka plan"), null, backdrop, live = false, onClick = onClearWallpaper)
             }
 
             // ------------------------------------------------ Drawer
@@ -242,8 +240,8 @@ fun SettingsScreen(
                     ) {
                         androidx.compose.foundation.Image(app.icon, null, Modifier.size(36.dp))
                         Spacer(Modifier.width(12.dp))
-                        Text(app.label, style = LabelStyle.copy(fontSize = 15.sp), modifier = Modifier.weight(1f))
-                        GlassChip(t("Show", "Göster"), null, backdrop) { onUnhide(app.key) }
+                        Text(app.label, style = PlainStyle.copy(fontSize = 15.sp), modifier = Modifier.weight(1f))
+                        GlassChip(t("Show", "Göster"), null, backdrop, live = false) { onUnhide(app.key) }
                     }
                 }
             }
@@ -252,22 +250,22 @@ fun SettingsScreen(
             Section(t("About", "Hakkında"))
             Text(
                 "Glass Launcher $version",
-                style = LabelStyle.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold),
+                style = PlainStyle.copy(fontSize = 16.sp, fontWeight = FontWeight.SemiBold),
             )
             Text(
                 t("Alpha build: features may change, break or disappear between updates.",
                     "Alpha sürüm: özellikler güncellemeler arasında değişebilir veya bozulabilir."),
-                style = LabelStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.75f)),
+                style = PlainStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.75f)),
                 modifier = Modifier.padding(top = 4.dp, bottom = 12.dp),
             )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                GlassChip(t("Default home app", "Varsayılan ana ekran"), null, backdrop) {
+                GlassChip(t("Default home app", "Varsayılan ana ekran"), null, backdrop, live = false) {
                     SystemActions.openHomeSettings(context)
                 }
-                GlassChip("GitHub", null, backdrop) { SystemActions.openUrl(context, REPO_URL) }
+                GlassChip("GitHub", null, backdrop, live = false) { SystemActions.openUrl(context, REPO_URL) }
             }
             Spacer(Modifier.height(10.dp))
-            GlassChip(t("Reset all settings", "Tüm ayarları sıfırla"), null, backdrop, onResetSettings)
+            GlassChip(t("Reset all settings", "Tüm ayarları sıfırla"), null, backdrop, live = false, onClick = onResetSettings)
         }
     }
 }
@@ -288,7 +286,7 @@ fun AlphaBadge() {
 private fun Section(title: String) {
     Text(
         title.uppercase(),
-        style = LabelStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFFBFD4FF)),
+        style = PlainStyle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFFBFD4FF)),
         modifier = Modifier.padding(top = 26.dp, bottom = 6.dp),
     )
 }
@@ -303,7 +301,7 @@ private fun Note(text: String) {
             .background(Color(0x33FFB300))
             .padding(14.dp)
     ) {
-        Text(text, style = LabelStyle.copy(fontSize = 13.sp))
+        Text(text, style = PlainStyle.copy(fontSize = 13.sp))
     }
 }
 
@@ -333,9 +331,9 @@ private fun SettingSwitch(title: String, subtitle: String?, checked: Boolean, on
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = LabelStyle.copy(fontSize = 16.sp))
+            Text(title, style = PlainStyle.copy(fontSize = 16.sp))
             if (subtitle != null) {
-                Text(subtitle, style = LabelStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f)))
+                Text(subtitle, style = PlainStyle.copy(fontSize = 13.sp, color = Color.White.copy(alpha = 0.7f)))
             }
         }
         Spacer(Modifier.width(12.dp))
@@ -354,8 +352,8 @@ private fun SettingSlider(
 ) {
     Column(Modifier.padding(vertical = 6.dp)) {
         Row {
-            Text(title, style = LabelStyle.copy(fontSize = 16.sp), modifier = Modifier.weight(1f))
-            Text(valueText, style = LabelStyle.copy(fontSize = 14.sp, color = Color.White.copy(alpha = 0.8f)))
+            Text(title, style = PlainStyle.copy(fontSize = 16.sp), modifier = Modifier.weight(1f))
+            Text(valueText, style = PlainStyle.copy(fontSize = 14.sp, color = Color.White.copy(alpha = 0.8f)))
         }
         Slider(value = value.coerceIn(range), onValueChange = onChange, valueRange = range, steps = steps, colors = sliderColors)
     }
